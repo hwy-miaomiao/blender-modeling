@@ -11,6 +11,8 @@
 
 一句话边界：**模型必须由 `<输出目录>/model.py` 这个脚本生成**。手改 `.blend`、只在日志里"看起来对"、没有渲染图，都不算交付。
 
+技能有两种模式：**模式 A（默认）从零新建**，走阶段 0 → 9；**模式 B 修改已有模型**，用 `templates/edit_model_template.py` 打开现成 `.blend` 改完再渲染导出，见第 10.5 节（其余闸门与交付要求相同）。
+
 ### 0.2 交付物（缺一即未完成）
 
 | # | 交付物 | 位置 | 说明 |
@@ -92,6 +94,8 @@ flowchart TD
 ```
 
 每阶段的产物与通过条件见第 3-12 节各阶段末尾的验收条件，汇总见第 17 节闸门表；不满足条件不得进入下一阶段。
+
+> **模式 B（改已有模型）**：不是从阶段 1 开始，而是阶段 0 体检 → 直接跳到第 10.5 节，用 `templates/edit_model_template.py` 打开已有 `.blend` 改完，再走第 11 节交付闸门与第 12 节交付说明。
 
 ## 3. 阶段 0：环境体检
 
@@ -327,6 +331,33 @@ python scripts/run_blender.py --script "$OUT\model.py" --out "$OUT" --stage full
 - `BM_RESULT` `ok:true`、`errors:[]`；`renders` 至少包含 `view-*` 三张；`final-*.png` 建议 960×960（或按用户要求），全部 > 15 KB。
 - `exports` 至少包含 `exports/model.blend` 与 `exports/model.glb`，两个文件非空；`<输出目录>/report.json` 存在且合法 JSON，`dimensions` 三轴为正、有相机与灯光。
 - 打开 `final-iso.png` 再看一遍，与预览一致、无新问题。
+- **交付 GLB 只含几何体**：kit 1.1.0 起 `export_glb/export_stl/export_fbx/export_obj` 默认排除 `kit_role="floor"` 的摄影棚地台与布尔 cutter（`.blend` 仍保留完整场景方便重渲）；真要带地台时显式传 `include_floor=True`。交付前确认 glb 里没有 `Floor` / `FloorMat` / `.001` 重名（`check_output.py` 与 `ci_check.py` 都会查）。
+
+## 10.5 模式 B：修改已有模型
+
+**什么时候用**：用户说"改一下这个模型 / 把杯子把手加长 / 换个颜色"，并且手上已有现成 `.blend`（例如上次交付的 `exports/model.blend`，或 `examples/` 里的样例）。
+
+**步骤**
+
+1. 建输出目录（沿第 1.2 节结构），`brief.md` 里写清：源文件路径、要改什么、不改什么、验收标准（**不要**用"新建模型"的 brief 模板）。
+2. 复制 `templates/edit_model_template.py` 到 `<输出目录>/model.py`，只改顶部 `EDITS` 字典（对象名 → 操作）与 `EXPORT_STEM`。支持的操作：
+
+   | 操作 | 值 | 说明 |
+   | --- | --- | --- |
+   | `translate` | `(dx, dy, dz)` 米 | 按世界坐标平移 |
+   | `rotate` | `(rx, ry, rz)` 度 | 按欧拉角旋转 |
+   | `scale` | `(sx, sy, sz)` | 缩放 |
+   | `material` | `("材质名", (r,g,b), roughness)` | 给该对象所有网格换材质（颜色是线性 Base Color） |
+   | `hide` | `True` | 隐藏（不参与渲染与导出） |
+
+3. 先跑 `--stage build`：日志会打印**场景对象名列表**与统计，确认要改的对象名（第一次改必然要先看这一行）。
+   ```powershell
+   python scripts/run_blender.py --script "$OUT\model.py" --out "$OUT" --stage build --label edit-build -- --blend "<源模型>\exports\model.blend"
+   ```
+4. 填好 `EDITS` 后跑 `--stage full`（或先 `--stage render` 看预览图），产物是 `model-edited.blend` / `model-edited.glb` / `view-*.png` / `report.json`。
+5. 之后与模式 A 完全一样：第 11 节 `check_output.py` 0 ERROR、第 12 节交付说明（写明"基于哪个源文件改的、改了哪些对象"）。
+
+**注意**：`open_blend` 打开后原地操作，`reset_scene()` 不会自动调用；不要在该模式下重新建场景，否则源模型会被清掉。源文件损坏时 `open_blend` 会返回 `{}` 并打印警告，此时应让用户重新提供 `.blend`。
 
 ## 11. 阶段 8：check_output.py 闸门（0 ERROR）
 
@@ -349,6 +380,9 @@ python scripts/check_output.py --out "$OUT" --min-views 4
 | `report 缺少 blend/glb 记录` | 导出没执行或路径不对 | 调 `export_all(EXPORTS_DIR, stem="model")` |
 | `model.py 未含 BLENDER_KIT_DIR` | 脚本被写死/丢头部 | 恢复模板头部环境变量段 |
 | 导出文件过小或缺失 | 导出失败/空场景 | 看该次 `logs/*.log` 末尾错误 |
+| `report 的导出路径/渲染路径必须是相对路径` | report 被写成绝对路径（旧版 kit 行为） | 重跑 `--stage full`（kit 1.1.0+ 自动写相对路径）或手工改相对路径 |
+| 渲染图尺寸过小 | `renders/` 里有 <64px 的占位图/假图 | 删掉占位图，重跑 `--stage render` |
+| 渲染统计记录的文件不存在 | report 与 `renders/` 不一致 | 重跑 `--stage full`，让 report 与图片同时更新 |
 
 WARN 可以带过，但要在交付说明里写明原因。
 
@@ -431,6 +465,9 @@ WARN 可以带过，但要在交付说明里写明原因。
 | `references/bpy-cookbook.md` | 阶段 3-4：bpy 4.0 实测 API、修改器、导出、4.0 与旧版差异 |
 | `references/render-and-check.md` | 阶段 5-6：相机/灯光/渲染参数推荐、构图、看图清单细节、迭代策略 |
 | `references/troubleshooting.md` | 任何阶段报错时查：症状/原因/解决/验证 |
+| `references/export-and-integration.md` | 阶段 7/9：导出格式怎么选、单位和坐标系、Three.js/Unity/UE/Godot 接入、3D 打印清单 |
+| `templates/edit_model_template.py` | 第 10.5 节模式 B：修改已有 `.blend` 的操作模板 |
+| `tests/README.md` | 改过 kit / 模板 / 脚本后：怎么跑回归测试（CI 与手动 Blender 两套） |
 | `examples/` | 需要 few-shot 参考时看完整实测样例（`lowpoly-mug/`、`office-chair/`） |
 
 ## 17. 校验闸门表
@@ -443,6 +480,7 @@ WARN 可以带过，但要在交付说明里写明原因。
 | 终渲闸门 | 同上 `--stage full --label final --timeout 900` | `ok=true`；`exports` 含 blend+glb；`report.json` 合法；final 图看好 | 检查导出分支/日志 |
 | 交付闸门 | `python scripts/check_output.py --out "<输出目录>"` | 退出码 0；0 ERROR（WARN 要解释） | 按 ERROR 关键字表（第 11 节）逐条修 |
 | 看图闸门 | `read_image` 打开 `renders/view-*.png`、`final-*.png` | 第 14 节 12 项全部"通过" | 回到阶段 6（或达 4 轮上限交付最佳） |
+| 仓库自检闸门（改技能本体后） | `python scripts/ci_check.py` 与 `python -m unittest discover -s tests -v` | ci_check `0 ERROR`；unittest `OK` | 按报错修文档/样例/脚本；改了 kit 再跑 `tests/kit_regression.blender.py` |
 
 ## 18. 最后提醒
 

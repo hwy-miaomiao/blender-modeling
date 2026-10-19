@@ -6,11 +6,13 @@
 
 检查项：
 1. SKILL.md frontmatter：name 为 kebab-case 且等于 blender-modeling，description 非空且 ≤500 字符
-2. 核心文件齐全（规范、kit、模板、脚本、参考文档、两个样例）
+2. 核心文件齐全（规范、kit、模板、脚本、参考文档、测试、两个样例）
 3. examples/ 两个样例完整：图片魔数与尺寸、.blend/.glb 魔数、report.json 统计与相对路径
 4. examples 的 model.py：通过 BLENDER_KIT_DIR 导入 kit、无盘符绝对路径、可编译
-5. 文档引用审计：规范/README/参考文档里提到的 references/*.md、lib|scripts|templates/*.py 必须真实存在
-6. 仓库约定文件：LICENSE、.gitignore、.gitattributes、CI workflow 存在
+5. 交付 GLB 只含几何体：不得出现摄影棚地台（Floor/FloorMat）、布尔 cutter、.001 重名
+6. CI workflow 必须包含语法检查、自测、仓库检查、单元测试四类步骤
+7. 文档引用审计：规范/README/参考文档里提到的 references/*.md、lib|scripts|templates/*.py 必须真实存在
+8. 仓库约定文件：LICENSE、.gitignore、.gitattributes、CI workflow 存在
 
 用法：
     python scripts/ci_check.py [--root <仓库根目录>]
@@ -49,6 +51,16 @@ REQUIRED_FILES = [
     "references/troubleshooting.md",
     "references/modeling-recipes.md",
     "references/bpy-cookbook.md",
+    "references/export-and-integration.md",
+    "templates/edit_model_template.py",
+    "CHANGELOG.md",
+    "tests/README.md",
+    "tests/test_cli_contract.py",
+    "tests/test_bl_common.py",
+    "tests/test_contact_sheet.py",
+    "tests/test_ci_check.py",
+    "tests/kit_smoke.blender.py",
+    "tests/kit_regression.blender.py",
 ]
 
 EXAMPLE_SLUGS = ["lowpoly-mug", "office-chair"]
@@ -69,16 +81,36 @@ DOC_FILES = [
     "AGENTS.md",
     "README.md",
     "CLAUDE.md",
+    "CHANGELOG.md",
     "references/prompt-to-model.md",
     "references/render-and-check.md",
     "references/troubleshooting.md",
     "references/modeling-recipes.md",
     "references/bpy-cookbook.md",
+    "references/export-and-integration.md",
 ]
 
 REF_MD_RE = re.compile(r"(?<![\w/.\\-])(references/[A-Za-z0-9_.-]+\.md)")
 REF_PY_RE = re.compile(r"(?<![\w/.\\-])((?:lib|scripts|templates)/[A-Za-z0-9_.-]+\.py)")
-ABS_PATH_RE = re.compile(r"(?<![\w/])[A-Za-z]:\\")
+ABS_PATH_RE = re.compile(r"(?<![\w/])[A-Za-z]:[\\/]")
+
+# 交付资产（.glb）里绝不该出现的名字：摄影棚地台、布尔 cutter、Blender 自动重名后缀
+FORBIDDEN_GLB_MATERIALS = ("FloorMat",)
+FORBIDDEN_GLB_NAME_PREFIXES = ("Floor",)
+BAD_SUFFIX = ".001"
+
+
+def _as_int(value):
+    """把 report 里的值转 int；bool/字符串/列表等非法类型返回 None。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _as_float(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _enable_utf8_console() -> None:
@@ -169,7 +201,9 @@ class Checker:
                 )
             else:
                 self.ok(f"SKILL.md description {len(desc)} 字符（上限 {DESCRIPTION_MAX}）")
-        if "name:" not in fm or "description:" not in fm:
+        has_name = re.search(r"(?m)^name:\s*\S+\s*$", fm) is not None
+        has_desc = re.search(r"(?m)^description:\s*\S+", fm) is not None
+        if not has_name and not has_desc:
             self.error("SKILL.md frontmatter 必须同时有 name 与 description")
 
     # ---- 2. 核心文件 ----
@@ -231,6 +265,52 @@ class Checker:
             return False
         return True
 
+    def _check_glb_asset(self, rel: str) -> None:
+        """校验交付 GLB 只含几何体：不得有摄影棚地台、布尔 cutter、.001 重名。"""
+        if not self.exists(rel):
+            return
+        with open(self.path(rel), "rb") as fh:
+            data = fh.read()
+        if len(data) < 20 or data[:4] != b"glTF":
+            return
+        offset = 12
+        doc = None
+        while offset + 8 <= len(data):
+            clen = struct.unpack("<I", data[offset:offset + 4])[0]
+            ctype = data[offset + 4:offset + 8]
+            body = data[offset + 8:offset + 8 + clen]
+            if ctype == b"JSON":
+                try:
+                    doc = json.loads(body.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    self.error(f"{rel} 的 JSON chunk 无法解析")
+                    return
+                break
+            offset += 8 + clen
+        if not isinstance(doc, dict):
+            return
+        names = []
+        for key in ("nodes", "meshes"):
+            for item in doc.get(key) or []:
+                if isinstance(item, dict) and item.get("name"):
+                    names.append(str(item["name"]))
+        materials = []
+        for item in doc.get("materials") or []:
+            if isinstance(item, dict) and item.get("name"):
+                materials.append(str(item["name"]))
+        bad = 0
+        for name in names + materials:
+            if name in FORBIDDEN_GLB_MATERIALS or name.endswith(BAD_SUFFIX) or any(
+                name.startswith(prefix) for prefix in FORBIDDEN_GLB_NAME_PREFIXES
+            ):
+                bad += 1
+                self.error(
+                    f"{rel} 含不该交付的对象/材质 {name!r}"
+                    "（应排除摄影棚地台、布尔 cutter 与 .001 重名，见 kit 1.1.0+）"
+                )
+        if bad == 0:
+            self.ok(f"{rel} 仅含几何体（nodes={len(names)} materials={len(materials)}）")
+
     def check_example(self, slug: str) -> None:
         base = f"examples/{slug}"
         missing = [rel for rel in EXAMPLE_REQUIRED if not self.exists(f"{base}/{rel}")]
@@ -243,6 +323,7 @@ class Checker:
             self._check_png(f"{base}/renders/{name}.png")
         self._check_magic(f"{base}/exports/model.blend", b"BLENDER", "blend", min_bytes=10 * 1024)
         self._check_magic(f"{base}/exports/model.glb", b"glTF", "glb", min_bytes=1024)
+        self._check_glb_asset(f"{base}/exports/model.glb")
 
         model_py = f"{base}/model.py"
         if self.exists(model_py):
@@ -266,18 +347,26 @@ class Checker:
         except (OSError, ValueError) as exc:
             self.error(f"{report_rel} 不是合法 JSON：{exc}")
             return
+        if not isinstance(report, dict):
+            self.error(f"{report_rel} 顶层必须是 JSON 对象，实际是 {type(report).__name__}")
+            return
         scene = report.get("scene") if isinstance(report.get("scene"), dict) else report
         dims = scene.get("dimensions")
-        if not (isinstance(dims, (list, tuple)) and len(dims) == 3 and all(
-            isinstance(v, (int, float)) and v > 0 for v in dims
-        )):
+        dim_vals = None
+        if isinstance(dims, (list, tuple)) and len(dims) == 3:
+            vals = [_as_float(v) for v in dims]
+            if all(v is not None and v > 0 for v in vals):
+                dim_vals = vals
+        if dim_vals is None:
             self.error(f"{report_rel} dimensions 应为三轴正数：{dims!r}")
         else:
-            self.ok(f"{report_rel} dimensions = {[round(float(v), 4) for v in dims]}")
-        if int(scene.get("object_count") or 0) < 1:
-            self.error(f"{report_rel} object_count < 1")
-        if int(scene.get("total_tris") or 0) < 8:
-            self.error(f"{report_rel} total_tris < 8（近似空模型）")
+            self.ok(f"{report_rel} dimensions = {[round(v, 4) for v in dim_vals]}")
+        object_count = _as_int(scene.get("object_count"))
+        if object_count is None or object_count < 1:
+            self.error(f"{report_rel} object_count 缺失/非数字/小于 1：{scene.get('object_count')!r}")
+        total_tris = _as_int(scene.get("total_tris"))
+        if total_tris is None or total_tris < 8:
+            self.error(f"{report_rel} total_tris 缺失/非数字/小于 8（近似空模型）：{scene.get('total_tris')!r}")
         renders = report.get("renders")
         if not isinstance(renders, list) or not renders:
             self.error(f"{report_rel} renders 为空或不是列表")
@@ -294,11 +383,13 @@ class Checker:
                 elif not self.exists(f"{base}/{rel}"):
                     self.error(f"{report_rel} 引用的渲染图不存在：{rel!r}")
                     bad += 1
-                if float(item.get("std") or 0) <= 4.0:
-                    self.error(f"{report_rel} {rel} 的 std={item.get('std')} 过低（疑似全黑/空白）")
+                std = _as_float(item.get("std"))
+                if std is None or std <= 4.0:
+                    self.error(f"{report_rel} {rel} 的 std 缺失/非数字/≤4.0（疑似全黑或空白）")
                     bad += 1
-                if float(item.get("black_ratio") or 0) >= 0.98:
-                    self.error(f"{report_rel} {rel} 的 black_ratio ≥0.98（疑似全黑）")
+                black_ratio = _as_float(item.get("black_ratio"))
+                if black_ratio is None or black_ratio >= 0.98:
+                    self.error(f"{report_rel} {rel} 的 black_ratio 缺失/非数字/≥0.98（疑似全黑）")
                     bad += 1
             if bad == 0:
                 self.ok(f"{report_rel} renders {len(renders)} 条统计与路径正常")
@@ -306,17 +397,22 @@ class Checker:
         if not isinstance(exports, dict):
             self.error(f"{report_rel} exports 不是对象")
         else:
+            bad = 0
             for kind in ("blend", "glb"):
                 rec = exports.get(kind)
                 if not isinstance(rec, dict):
                     self.error(f"{report_rel} exports 缺少 {kind} 记录")
+                    bad += 1
                     continue
                 rel = rec.get("path", "")
                 if not self._is_relative(rel):
                     self.error(f"{report_rel} exports.{kind}.path 不是相对路径：{rel!r}")
+                    bad += 1
                 elif not self.exists(f"{base}/{rel}"):
                     self.error(f"{report_rel} 引用的导出文件不存在：{rel!r}")
-            self.ok(f"{report_rel} exports 记录正常")
+                    bad += 1
+            if bad == 0:
+                self.ok(f"{report_rel} exports 记录正常")
 
     def check_examples(self) -> None:
         ex_dir = self.path("examples")
@@ -331,7 +427,10 @@ class Checker:
                 self.error(f"缺少示例 examples/{slug}/")
         for slug in EXAMPLE_SLUGS:
             if slug in found:
-                self.check_example(slug)
+                try:
+                    self.check_example(slug)
+                except Exception as exc:  # 单个样例的脏数据不能拖垮整个检查
+                    self.error(f"examples/{slug} 检查过程中抛异常：{exc!r}")
 
     # ---- 4. Python 语法 ----
     def check_python_syntax(self) -> None:
@@ -354,7 +453,20 @@ class Checker:
         if failed == 0:
             self.ok(f"全部 {count} 个 .py 文件语法通过")
 
-    # ---- 5. 文档引用 ----
+    # ---- 5. CI workflow ----
+    def check_ci_workflow(self) -> None:
+        rel = ".github/workflows/ci.yml"
+        if not self.exists(rel):
+            return
+        text = self.read_text(rel)
+        required = ("compileall", "check_output.py --selftest", "ci_check.py", "unittest")
+        missing = [token for token in required if token not in text]
+        if missing:
+            self.error(f"{rel} 缺少步骤关键字：{missing}")
+        else:
+            self.ok(f"{rel} 含语法/自测/仓库检查/单元测试步骤")
+
+    # ---- 6. 文档引用 ----
     def check_doc_references(self) -> None:
         missing = set()
         checked = 0
@@ -384,6 +496,7 @@ class Checker:
         self.check_required_files()
         self.check_examples()
         self.check_python_syntax()
+        self.check_ci_workflow()
         self.check_doc_references()
         print(f"=== 结果: {self.passes} PASS / {self.errors} ERROR / {self.warns} WARN ===")
         if self.errors:

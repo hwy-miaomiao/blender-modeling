@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -48,6 +49,12 @@ MIN_BLEND_BYTES = 1024
 MIN_GLB_BYTES = 256
 MIN_STD = 4.0
 MAX_BLACK_RATIO = 0.98
+MIN_VIEW_SIZE = 64  # 渲染图最小边长（像素），防止 1x1 补零图混过闸门
+
+
+def _is_number(value):
+    """数值判断（排除 bool：isinstance(True, int) 为真但不能当统计值）。"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 # ---------------------------------------------------------------------------
@@ -136,11 +143,13 @@ def render_entries(report):
 
 
 def resolve_out_path(out_dir, path):
+    """把 report 里的相对路径解析成绝对路径；绝对路径返回 None（report 必须可移植）。"""
     if not path:
         return None
-    if os.path.isabs(path):
-        return path
-    return os.path.join(out_dir, path.replace("/", os.sep))
+    text = str(path)
+    if os.path.isabs(text) or re.match(r"^[A-Za-z]:[\\/]", text) or text.startswith("\\\\"):
+        return None
+    return os.path.join(out_dir, text.replace("/", os.sep))
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +250,10 @@ def check_renders(checker, out_dir, min_views):
         if dims is None:
             checker.error("渲染图不是合法 PNG: %s (%d bytes)" % (name, size))
             continue
-        if size < MIN_PNG_BYTES:
+        if dims[0] < MIN_VIEW_SIZE or dims[1] < MIN_VIEW_SIZE:
+            checker.error("渲染图尺寸过小: %s (%dx%d < %d)" % (
+                name, dims[0], dims[1], MIN_VIEW_SIZE))
+        elif size < MIN_PNG_BYTES:
             checker.error("渲染图过小，疑似空/黑图: %s (%.1f KB)" % (name, size / 1024.0))
         else:
             checker.ok("渲染图: %s %dx%d (%.1f KB)" % (name, dims[0], dims[1], size / 1024.0))
@@ -265,7 +277,7 @@ def check_report(checker, out_dir):
     )
     for key, minimum, label in checks:
         value = scene.get(key)
-        if not isinstance(value, (int, float)):
+        if not _is_number(value):
             checker.error("report.scene.%s 缺失或不是数字: %r" % (key, value))
         elif value < minimum:
             checker.error("report.scene.%s=%r 低于要求 %r（%s）" % (key, value, minimum, label))
@@ -277,21 +289,24 @@ def check_report(checker, out_dir):
         checker.error("report.scene.dimensions 必须是 3 个数字: %r" % (dims,))
     else:
         try:
-            positive = all(float(d) > 1e-6 for d in dims)
+            positive = all(_is_number(d) and float(d) > 1e-6 for d in dims)
         except (TypeError, ValueError):
             positive = False
         if positive:
             checker.ok("模型尺寸: %.3f x %.3f x %.3f 米" % tuple(float(d) for d in dims))
         else:
-            checker.error("模型尺寸存在非正数: %r" % (dims,))
+            checker.error("模型尺寸存在非正数或非数字: %r" % (dims,))
 
     exports = export_paths(report)
     for key in ("blend", "glb"):
-        path = resolve_out_path(out_dir, exports.get(key))
-        if path and os.path.isfile(path):
+        raw = exports.get(key)
+        path = resolve_out_path(out_dir, raw)
+        if path is None:
+            checker.error("report 的导出路径必须是相对路径: %r" % (raw,))
+        elif os.path.isfile(path):
             checker.ok("report 记录导出 %s" % key)
         else:
-            checker.error("report 缺少 %s 导出记录或文件不存在: %r" % (key, exports.get(key)))
+            checker.error("report 缺少 %s 导出记录或文件不存在: %r" % (key, raw))
 
     entries = render_entries(report)
     if not entries:
@@ -301,20 +316,22 @@ def check_report(checker, out_dir):
         Path = entry.get("path") or entry.get("file")
         std = entry.get("std")
         black_ratio = entry.get("black_ratio")
-        label = os.path.basename(Path) if Path else "?"
-        if not isinstance(std, (int, float)):
+        label = os.path.basename(str(Path)) if Path else "?"
+        if not _is_number(std):
             checker.error("渲染统计缺少 std（%s）" % label)
         elif float(std) <= MIN_STD:
             checker.error("渲染图疑似纯色/全黑（std=%.2f <= %.1f）: %s" % (float(std), MIN_STD, label))
         else:
             checker.ok("渲染统计正常: %s std=%.1f" % (label, float(std)))
-        if not isinstance(black_ratio, (int, float)):
+        if not _is_number(black_ratio):
             checker.error("渲染统计缺少 black_ratio（%s）" % label)
         elif float(black_ratio) >= MAX_BLACK_RATIO:
             checker.error("渲染图黑像素占比过高（%.3f）: %s" % (float(black_ratio), label))
         resolved = resolve_out_path(out_dir, Path)
-        if resolved and not os.path.isfile(resolved):
-            checker.warn("渲染统计记录的文件不存在: %s" % resolved)
+        if resolved is None:
+            checker.error("渲染统计里的路径必须是相对路径: %r" % (Path,))
+        elif not os.path.isfile(resolved):
+            checker.error("渲染统计记录的文件不存在: %s" % resolved)
 
 
 def run_checks(out_dir, min_views=3):
@@ -339,6 +356,15 @@ _TINY_PNG = bytes.fromhex(
 )
 
 
+def _png_header(width, height):
+    """生成一个只有 IHDR 的合法 PNG 头（用于自测构造任意尺寸的假图）。"""
+    import zlib
+    ihdr = struct.pack(">IIBBBBB", int(width), int(height), 8, 6, 0, 0, 0)
+    chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(
+        ">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
+    return PNG_MAGIC + chunk
+
+
 def selftest():
     failures = []
 
@@ -354,6 +380,11 @@ def selftest():
         with open(png_path, "wb") as fh:
             fh.write(_TINY_PNG)
         expect("png_size 解析 1x1", png_size(png_path) == (1, 1))
+
+        big_header_png = os.path.join(tmp, "512.png")
+        with open(big_header_png, "wb") as fh:
+            fh.write(_png_header(512, 512))
+        expect("png_size 解析 512x512", png_size(big_header_png) == (512, 512))
 
         bad_png = os.path.join(tmp, "bad.png")
         with open(bad_png, "wb") as fh:
@@ -384,6 +415,10 @@ def selftest():
         expect("render_entries", len(render_entries(report)) == 1)
         expect("resolve_out_path 相对路径",
                resolve_out_path(tmp, "renders/x.png") == os.path.join(tmp, "renders", "x.png"))
+        expect("resolve_out_path 拒绝绝对路径",
+               resolve_out_path(tmp, "C:/Users/x/renders/a.png") is None)
+        expect("resolve_out_path 拒绝反斜杠绝对路径",
+               resolve_out_path(tmp, "C:\\Users\\x\\a.png") is None)
 
         checker = Checker()
         checker.ok("x")
@@ -401,7 +436,7 @@ def selftest():
             fh.write("# brief\n")
         big_png = os.path.join(out, "renders", "view-front.png")
         with open(big_png, "wb") as fh:
-            fh.write(_TINY_PNG + b"\x00" * (16 * 1024))
+            fh.write(_png_header(512, 512) + b"\x00" * (16 * 1024))
         with open(os.path.join(out, "exports", "model.blend"), "wb") as fh:
             fh.write(BLEND_MAGIC + b"\x00" * 2048)
         with open(os.path.join(out, "exports", "model.glb"), "wb") as fh:
@@ -434,26 +469,32 @@ def main(argv=None):
         return selftest()
     if not args.out:
         parser.error("必须提供 --out <输出目录>（或使用 --selftest）")
+    if args.min_views < 1:
+        parser.error("--min-views 必须 >= 1（至少要求 1 张渲染图）")
 
     out_dir = os.path.abspath(args.out)
-    print("=== check_output: %s ===" % out_dir)
     checker = run_checks(out_dir, min_views=args.min_views)
+    counts = checker.summary()
 
     if args.json:
-        print(json.dumps([{"level": lv, "message": msg} for lv, msg in checker.items],
-                         ensure_ascii=False, indent=2))
+        payload = {
+            "out": out_dir,
+            "ok": not checker.failed,
+            "counts": counts,
+            "items": [{"level": level, "message": message} for level, message in checker.items],
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
+        print("=== check_output: %s ===" % out_dir)
         for level, message in checker.items:
             print("[%s] %s" % (level, message))
-
-    counts = checker.summary()
-    print("\n=== 结果: %d PASS / %d ERROR / %d WARN ===" % (
-        counts["PASS"], counts["ERROR"], counts["WARN"]))
-    if checker.failed:
-        print("交付闸门未通过：修复上面的 ERROR 后重跑 check_output.py")
-        return 1
-    print("交付闸门通过（WARN 需人工确认不影响交付）。")
-    return 0
+        print("\n=== 结果: %d PASS / %d ERROR / %d WARN ===" % (
+            counts["PASS"], counts["ERROR"], counts["WARN"]))
+        if checker.failed:
+            print("交付闸门未通过：修复上面的 ERROR 后重跑 check_output.py")
+        else:
+            print("交付闸门通过（WARN 需人工确认不影响交付）。")
+    return 1 if checker.failed else 0
 
 
 if __name__ == "__main__":

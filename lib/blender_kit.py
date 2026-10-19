@@ -34,7 +34,7 @@ import time
 
 from mathutils import Vector, Euler
 
-KIT_VERSION = "1.0.0"
+KIT_VERSION = "1.1.0"
 
 # 渲染统计 / 导出记录 / 警告等运行时状态；save_report() 会汇总它们
 _STATE = {
@@ -95,15 +95,32 @@ def _ensure_object_mode():
         pass
 
 
-def _unique_object_name(base):
-    """返回在 bpy.data.objects 中不重复的对象名（base、base.001、base.002 ...）。"""
+def _unique_object_name(base, exclude=None):
+    """返回在 bpy.data.objects 中不重复的对象名（base、base.001、base.002 ...）。
+
+    exclude: 可选，判重时忽略的对象（正在改名的对象自己不算冲突，避免多余 .001）。
+    """
     base = str(base) if base else "Object"
-    if base not in bpy.data.objects:
+    excluded = None
+    try:
+        if exclude is not None and exclude.name in bpy.data.objects:
+            excluded = exclude
+    except Exception:
+        excluded = None
+    names = set()
+    for o in bpy.data.objects:
+        if o is excluded:
+            continue
+        try:
+            names.add(o.name)
+        except Exception:
+            continue
+    if base not in names:
         return base
     i = 1
     while True:
         cand = "%s.%03d" % (base, i)
-        if cand not in bpy.data.objects:
+        if cand not in names:
             return cand
         i += 1
 
@@ -161,6 +178,14 @@ def _activate(obj):
     except Exception:
         return False
     return True
+
+
+def _alive(obj):
+    """判断对象是否仍有效（未被删除/引用失效），可安全调用后再操作。"""
+    try:
+        return obj is not None and obj.name in bpy.data.objects
+    except Exception:
+        return False
 
 
 def _ensure_dir_for(path):
@@ -245,7 +270,7 @@ def _finalize(obj, name=None, material=None):
     if obj is None:
         return None
     if name:
-        new_name = _unique_object_name(name)
+        new_name = _unique_object_name(name, exclude=obj)
         obj.name = new_name
         data = getattr(obj, "data", None)
         if data is not None:
@@ -375,6 +400,49 @@ def reset_scene():
     _log("场景已重置为空场景（Blender %s）" % bpy.app.version_string)
 
 
+def open_blend(path):
+    """打开已有 .blend 工程（用于「修改已有模型」，而不是从零新建）。
+
+    打开后当前场景变成文件里的场景：原有对象、材质、相机、灯光全部保留，
+    可以直接 kit.place/rotate/材质量改，然后照常 render_still/export_all。
+    注意：打开新文件会清空 _STATE 里旧的渲染/导出记录。
+
+    参数:
+        path: .blend 文件路径（相对路径按 Blender 当前工作目录解析）
+    返回:
+        dict(mainfile, scene_name, object_count, mesh_count, camera_count, light_count)；
+        文件损坏/格式不支持时返回 {} 并记警告
+    异常:
+        FileNotFoundError: 文件不存在（这种情况调用方必须感知）
+    """
+    absp = os.path.abspath(os.path.expanduser(os.fspath(path)))
+    if not os.path.isfile(absp):
+        raise FileNotFoundError("open_blend: 找不到 .blend 文件 %r" % (absp,))
+    _ensure_object_mode()
+    try:
+        bpy.ops.wm.open_mainfile(filepath=absp)
+    except Exception as exc:
+        _warn("open_blend: 打开失败（文件损坏或格式不支持）%r" % (exc,))
+        return {}
+    _STATE["renders"] = []
+    _STATE["exports"] = {}
+    _STATE["warnings"] = []
+    _STATE["render_setup"] = {}
+    sc = bpy.context.scene
+    objs = list(sc.objects) if sc is not None else []
+    info = {
+        "mainfile": absp,
+        "scene_name": sc.name if sc is not None else "",
+        "object_count": len(objs),
+        "mesh_count": sum(1 for o in objs if o.type == 'MESH'),
+        "camera_count": sum(1 for o in objs if o.type == 'CAMERA'),
+        "light_count": sum(1 for o in objs if o.type == 'LIGHT'),
+    }
+    _log("已打开 blend: %s（%d 对象 / %d 网格）"
+         % (absp, info["object_count"], info["mesh_count"]))
+    return info
+
+
 def setup_world(color=(0.05, 0.05, 0.06), strength=0.6):
     """设置世界背景颜色与亮度（用 World 节点里的 Background 节点）。
 
@@ -478,6 +546,34 @@ def setup_floor(size=20.0, color=(0.35, 0.35, 0.38), roughness=0.8):
     返回:
         平面对象
     """
+    existing = None
+    for o in _scene().objects:
+        try:
+            if o.get("kit_role") == "floor":
+                existing = o
+                break
+        except Exception:
+            continue
+    if existing is not None:
+        _warn("setup_floor: 场景已有地台 %r，复用并更新尺寸/材质（不新建）"
+              % (getattr(existing, "name", "?"),))
+        try:
+            me = existing.data
+            if me is not None and len(me.vertices) == 4:
+                half = float(size) / 2.0
+                for v in me.vertices:
+                    v.co.x = math.copysign(half, v.co.x if abs(v.co.x) > 1e-9 else 1.0)
+                    v.co.y = math.copysign(half, v.co.y if abs(v.co.y) > 1e-9 else 1.0)
+                me.update()
+        except Exception as exc:
+            _warn("setup_floor: 调整已有地台尺寸失败 %r" % (exc,))
+        m = bpy.data.materials.get("FloorMat")
+        if m is None:
+            m = mat("FloorMat", color=color, roughness=roughness)
+        else:
+            _configure_material(m, color=color, roughness=roughness)
+        assign(existing, m)
+        return existing
     bpy.ops.mesh.primitive_plane_add(size=float(size), location=(0.0, 0.0, 0.0))
     ob = bpy.context.object
     ob.name = _unique_object_name("Floor")
@@ -534,6 +630,7 @@ def look_at(obj, target=(0, 0, 0)):
         t = Vector((float(target[0]), float(target[1]), float(target[2])))
         d = t - obj.location
         if d.length < 1e-9:
+            _warn("look_at: 相机与目标点重合 %r，朝向保持不变" % (tuple(t),))
             return
         obj.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
         # 刷新 depsgraph，保证 matrix_world 立即反映新朝向
@@ -725,7 +822,17 @@ def cube(name, size=(1, 1, 1), location=(0, 0, 0), rotation=(0, 0, 0), material=
     """
     if isinstance(size, (int, float)):
         size = (size, size, size)
-    sx, sy, sz = float(size[0]), float(size[1]), float(size[2])
+    try:
+        vals = [float(v) for v in size]
+    except Exception:
+        _warn("cube: size 需要数字或 1-3 元组，收到 %r，已退回 (1,1,1)" % (size,))
+        vals = [1.0, 1.0, 1.0]
+    if not vals:
+        _warn("cube: size 为空，已退回 (1,1,1)")
+        vals = [1.0, 1.0, 1.0]
+    while len(vals) < 3:
+        vals.append(vals[-1])
+    sx, sy, sz = vals[0], vals[1], vals[2]
     bpy.ops.mesh.primitive_cube_add(size=1.0, location=location,
                                     rotation=[math.radians(v) for v in rotation])
     ob = bpy.context.object
@@ -863,8 +970,8 @@ def tube(name, points, radius=0.02, resolution=12, material=None, closed=False):
             _warn("tube: 曲线转网格失败: %r" % (exc,))
     if material is not None:
         assign(ob, material)
-    # convert 之后对象名可能变化，统一改名
-    new_name = _unique_object_name(str(name))
+    # convert 之后对象名可能变化，统一改名（exclude=ob：自己占的名字不算冲突）
+    new_name = _unique_object_name(str(name), exclude=ob)
     ob.name = new_name
     try:
         ob.data.name = new_name
@@ -1019,7 +1126,12 @@ def shade_smooth(obj, angle=30.0):
     """
     if obj is None:
         return obj
-    _activate(obj)
+    if not _alive(obj):
+        _warn("shade_smooth: 对象已失效（可能已被删除），跳过")
+        return obj
+    if not _activate(obj):
+        _warn("shade_smooth: 无法激活对象，跳过")
+        return obj
     try:
         bpy.ops.object.shade_smooth()
     except Exception as exc:
@@ -1044,7 +1156,12 @@ def shade_flat(obj):
     """
     if obj is None:
         return obj
-    _activate(obj)
+    if not _alive(obj):
+        _warn("shade_flat: 对象已失效（可能已被删除），跳过")
+        return obj
+    if not _activate(obj):
+        _warn("shade_flat: 无法激活对象，跳过")
+        return obj
     try:
         bpy.ops.object.shade_flat()
     except Exception as exc:
@@ -1061,6 +1178,9 @@ def apply_modifiers(obj):
         obj
     """
     if obj is None:
+        return obj
+    if not _alive(obj):
+        _warn("apply_modifiers: 对象已失效（可能已被删除），跳过")
         return obj
     if not getattr(obj, "modifiers", None):
         return obj
@@ -1080,13 +1200,16 @@ def join(objects, name):
     返回:
         合并后的对象；列表为空时返回 None
     """
-    objs = [o for o in (objects or []) if o is not None]
+    objs = [o for o in (objects or []) if _alive(o)]
     if not objs:
-        _warn("join: objects 为空，返回 None")
+        _warn("join: objects 为空或全部失效，返回 None")
         return None
+    lost = [getattr(o, "name", "?") for o in objs[1:] if getattr(o, "modifiers", None)]
+    if lost:
+        _warn("join: 非首个对象的修改器会被丢弃，请先 apply_modifiers: %r" % (lost,))
     if len(objs) == 1:
         if name:
-            objs[0].name = _unique_object_name(str(name))
+            objs[0].name = _unique_object_name(str(name), exclude=objs[0])
         return objs[0]
     _ensure_object_mode()
     try:
@@ -1106,7 +1229,7 @@ def join(objects, name):
         _warn("join 失败: %r" % (exc,))
         return target
     if name:
-        target.name = _unique_object_name(str(name))
+        target.name = _unique_object_name(str(name), exclude=target)
     return target
 
 
@@ -1197,18 +1320,15 @@ def add_mirror(obj, axis="X", bisect=False):
     try:
         axes = axis if isinstance(axis, (list, tuple, set)) else [axis]
         idx = {str(a).upper(): i for a, i in (("X", 0), ("Y", 1), ("Z", 2))}
+        vals = [False, False, False]
+        for a in axes:
+            i = idx.get(str(a).upper())
+            if i is not None:
+                vals[i] = True
         mod = obj.modifiers.new(name="Mirror", type='MIRROR')
-        for name in ("use_axis", "use_bisect_axis"):
-            try:
-                vals = list(getattr(mod, name))
-                vals = [False, False, False]
-                for a in axes:
-                    i = idx.get(str(a).upper())
-                    if i is not None:
-                        vals[i] = True
-                setattr(mod, name, vals)
-            except Exception:
-                pass
+        mod.use_axis = list(vals)
+        # bisect 只有在显式要求时才启用：否则镜像会静默切掉跨镜像面的原始几何
+        mod.use_bisect_axis = list(vals) if bisect else [False, False, False]
         if bisect:
             try:
                 mod.use_clip = True
@@ -1304,6 +1424,8 @@ def add_boolean(obj, cutter, operation="DIFFERENCE", solver="EXACT", apply=True)
         else:
             try:
                 cutter.hide_render = True
+                cutter.hide_viewport = True
+                cutter["kit_role"] = "cutter"
             except Exception:
                 pass
     except Exception as exc:
@@ -1384,36 +1506,62 @@ def set_origin(obj, mode="BOTTOM"):
     return obj
 
 
-def mesh_stats(obj):
-    """返回网格统计。
+def mesh_stats(obj, evaluated=True):
+    """返回网格统计（默认统计应用修改器后的求值网格）。
 
     参数:
         obj: 对象（非 Mesh 对象返回全 0 统计）
+        evaluated: True（默认）统计 depsgraph 求值后的网格，修改器（bevel/subsurf/
+                   array/boolean…）都计入；False 统计未求值的基础网格
     返回:
         {"name": str, "verts": int, "tris": int, "non_manifold_edges": int}
         注：开口边界边也算 non_manifold（与 Blender 的 Non Manifold 选择一致）。
     """
-    out = {"name": getattr(obj, "name", ""), "verts": 0, "tris": 0, "non_manifold_edges": 0}
-    if obj is None or str(getattr(obj, "type", "")) != 'MESH':
+    out = {"name": "", "verts": 0, "tris": 0, "non_manifold_edges": 0}
+    if not _alive(obj):
+        _warn("mesh_stats: 对象已失效（可能已被删除），返回空统计")
         return out
-    me = getattr(obj, "data", None)
-    if me is None:
+    if str(getattr(obj, "type", "")) != 'MESH':
         return out
-    try:
-        out["verts"] = len(me.vertices)
-        me.calc_loop_triangles()
-        out["tris"] = len(me.loop_triangles)
-    except Exception as exc:
-        _warn("mesh_stats(tris) 失败: %r" % (exc,))
-    try:
-        bm = bmesh.new()
+    out["name"] = getattr(obj, "name", "")
+    base = getattr(obj, "data", None)
+    if base is None:
+        return out
+    ev = None
+    me = base
+    if evaluated:
         try:
-            bm.from_mesh(me)
-            out["non_manifold_edges"] = sum(1 for e in bm.edges if not e.is_manifold)
-        finally:
-            bm.free()
-    except Exception as exc:
-        _warn("mesh_stats(non_manifold) 失败: %r" % (exc,))
+            dg = bpy.context.evaluated_depsgraph_get()
+            ev = obj.evaluated_get(dg)
+            evaluated_mesh = ev.to_mesh()
+            if evaluated_mesh is not None:
+                me = evaluated_mesh
+        except Exception as exc:
+            _warn("mesh_stats: 求值网格失败，退回基础网格 %r" % (exc,))
+            ev = None
+            me = base
+    try:
+        try:
+            out["verts"] = len(me.vertices)
+            me.calc_loop_triangles()
+            out["tris"] = len(me.loop_triangles)
+        except Exception as exc:
+            _warn("mesh_stats(tris) 失败: %r" % (exc,))
+        try:
+            bm = bmesh.new()
+            try:
+                bm.from_mesh(me)
+                out["non_manifold_edges"] = sum(1 for e in bm.edges if not e.is_manifold)
+            finally:
+                bm.free()
+        except Exception as exc:
+            _warn("mesh_stats(non_manifold) 失败: %r" % (exc,))
+    finally:
+        if ev is not None:
+            try:
+                ev.to_mesh_clear()
+            except Exception:
+                pass
     return out
 
 
@@ -1453,6 +1601,9 @@ def assign(obj, material):
         obj
     """
     if obj is None or material is None:
+        return obj
+    if not _alive(obj):
+        _warn("assign: 对象已失效（可能已被删除），跳过")
         return obj
     data = getattr(obj, "data", None)
     if data is None:
@@ -1714,12 +1865,34 @@ def setup_render(engine="CYCLES", samples=48, resolution=(960, 960), transparent
     return info
 
 
+def _render_summary():
+    """返回当前渲染参数摘要（供 report.renders 自证每张图用什么参数渲的）。"""
+    sc = _scene()
+    info = {"engine": "UNKNOWN", "resolution": [0, 0], "samples": None}
+    try:
+        info["engine"] = str(sc.render.engine)
+    except Exception:
+        pass
+    try:
+        info["resolution"] = [int(sc.render.resolution_x), int(sc.render.resolution_y)]
+    except Exception:
+        pass
+    try:
+        if info["engine"] == 'CYCLES':
+            info["samples"] = int(sc.cycles.samples)
+        elif info["engine"] == 'BLENDER_EEVEE':
+            info["samples"] = int(sc.eevee.taa_render_samples)
+    except Exception:
+        pass
+    return info
+
+
 def render_still(path, camera=None, label=None):
     """渲染单帧并写 PNG，随后读回图像统计（用于自动判断是否全黑）。
 
     参数:
         path: 输出 PNG 路径（相对路径会转成绝对路径；无扩展名时自动按 .png 找）
-        camera: 可选相机；给了就临时设为场景相机
+        camera: 可选相机；给了就临时设为场景相机（渲染结束后恢复原相机）
         label: 统计里的标签，默认取文件名
     返回:
         dict: {"path","width","height","bytes","mean","std","black_ratio","label"}
@@ -1728,22 +1901,36 @@ def render_still(path, camera=None, label=None):
     sc = _scene()
     absp = os.path.abspath(os.fspath(path))
     _ensure_dir_for(absp)
+    old_cam = None
+    try:
+        old_cam = sc.camera
+    except Exception:
+        old_cam = None
     if camera is not None:
         try:
             sc.camera = camera
         except Exception as exc:
             _warn("render_still: 设置相机失败 %r" % (exc,))
+    created = False
     if sc.camera is None:
         _warn("render_still: 场景没有相机，自动创建一台")
         add_camera()
+        created = True
     try:
-        sc.render.image_settings.file_format = 'PNG'
-    except Exception:
-        pass
-    sc.render.filepath = absp
-    t0 = time.time()
-    bpy.ops.render.render(write_still=True)
-    seconds = round(time.time() - t0, 3)
+        try:
+            sc.render.image_settings.file_format = 'PNG'
+        except Exception:
+            pass
+        sc.render.filepath = absp
+        t0 = time.time()
+        bpy.ops.render.render(write_still=True)
+        seconds = round(time.time() - t0, 3)
+    finally:
+        try:
+            if not created:
+                sc.camera = old_cam
+        except Exception:
+            pass
     final = absp
     if not os.path.exists(final) and os.path.exists(final + ".png"):
         final = final + ".png"
@@ -1752,6 +1939,7 @@ def render_still(path, camera=None, label=None):
         os.path.basename(final))[0]
     record = dict(stats)
     record["seconds"] = seconds
+    record.update(_render_summary())
     _STATE["renders"].append(record)
     _log("渲染完成 %s (%.2fs, %dx%d, bytes=%d, std=%.2f, black=%.3f)" % (
         final, seconds, stats["width"], stats["height"], stats["bytes"],
@@ -1776,16 +1964,48 @@ def _maybe_reconfigure_render(engine=None, samples=None, resolution=None):
     )
 
 
-def _frame_objects():
-    """取景目标：场景里所有有几何体、且不是地台的对象。"""
+def _visible_geometry():
+    """返回参与取景/统计/导出的可见几何对象。
+
+    排除：地台（kit_role='floor'）、布尔切割体（kit_role='cutter'）、
+    hide_render 的辅助对象。取景、统计、导出共用同一口径。
+    """
     out = []
     for o in _scene().objects:
         try:
-            if o.type in _GEOMETRY_TYPES and o.get("kit_role") != "floor":
-                out.append(o)
+            if o.type not in _GEOMETRY_TYPES:
+                continue
+            if o.get("kit_role") in ("floor", "cutter"):
+                continue
+            if o.hide_render:
+                continue
+            out.append(o)
         except Exception:
             continue
     return out
+
+
+def _restore_render_setup(old_setup, who="render"):
+    """渲染预览结束后恢复进入前的渲染设置（旧值为空时不动作）。"""
+    if not old_setup:
+        return
+    try:
+        setup_render(
+            engine=old_setup.get("engine_requested") or old_setup.get("engine") or "CYCLES",
+            samples=int(old_setup.get("samples", 48) or 48),
+            resolution=tuple(old_setup.get("resolution") or (960, 960)),
+            transparent=bool(old_setup.get("transparent", False)),
+            denoise=bool(old_setup.get("denoise", True)),
+            film_exposure=float(old_setup.get("film_exposure", 1.0) or 1.0),
+            color_look=old_setup.get("color_look") or old_setup.get("look"),
+        )
+    except Exception as exc:
+        _warn("%s: 恢复渲染设置失败 %r" % (who, exc))
+
+
+def _frame_objects():
+    """取景目标：场景里所有可见几何体（自动排除地台/切割体/隐藏对象）。"""
+    return _visible_geometry()
 
 
 def _aim_camera(cam, targets, direction, margin=1.15):
@@ -1824,12 +2044,13 @@ def render_views(out_dir, prefix="view", views=("front", "right", "iso"), camera
         views: 视角名元组（front/right/left/back/iso，未知名字按 iso 处理）
         camera: 可选相机；None 时用场景当前相机（没有就自动创建）
         engine/samples/resolution: 可选，覆盖 setup_render 的设置
-        （取景目标是场景中除地台外的所有几何对象；拍完恢复原相机与原设置）
+        （取景目标是场景中的可见几何对象；拍完恢复原相机、原视角与渲染设置）
     返回:
         render_still 返回字典的列表
     """
     out_dir = os.path.abspath(os.fspath(out_dir))
     os.makedirs(out_dir, exist_ok=True)
+    old_setup = dict(_STATE.get("render_setup") or {})
     _maybe_reconfigure_render(engine, samples, resolution)
     sc = _scene()
     cam = camera if camera is not None else sc.camera
@@ -1867,11 +2088,12 @@ def render_views(out_dir, prefix="view", views=("front", "right", "iso"), camera
             sc.camera = old_scene_camera
         except Exception as exc:
             _warn("render_views: 恢复相机失败 %r" % (exc,))
+        _restore_render_setup(old_setup, "render_views")
     return results
 
 
 def render_turntable(out_dir, prefix="turn", count=6, elevation=20.0, **kw):
-    """绕场景中心拍一圈转台图（角度从正前方 +Y 开始递增，逆时针绕 Z）。
+    """绕场景中心拍一圈转台图（从正前方 +Y 开始，向 +X 方向递增；俯视为顺时针）。
 
     参数:
         out_dir: 输出目录
@@ -1892,6 +2114,7 @@ def render_turntable(out_dir, prefix="turn", count=6, elevation=20.0, **kw):
     margin = float(kw.pop("margin", 1.15))
     if kw:
         _warn("render_turntable: 忽略未知参数 %r" % (sorted(kw.keys()),))
+    old_setup = dict(_STATE.get("render_setup") or {})
     _maybe_reconfigure_render(engine, samples, resolution)
     sc = _scene()
     if cam is None:
@@ -1927,6 +2150,7 @@ def render_turntable(out_dir, prefix="turn", count=6, elevation=20.0, **kw):
             sc.camera = old_scene_camera
         except Exception as exc:
             _warn("render_turntable: 恢复相机失败 %r" % (exc,))
+        _restore_render_setup(old_setup, "render_turntable")
     return results
 
 
@@ -1949,6 +2173,44 @@ def _normalize_export_path(path, ext):
         absp += ext
     _ensure_dir_for(absp)
     return absp
+
+
+def _export_targets(include_floor=False):
+    """返回应导出到交付资产里的几何对象（默认排除摄影棚地台）。
+
+    摄影棚地台由 setup_floor 创建并标记 kit_role='floor'，它只服务于渲染取景，
+    不应出现在 glb/stl/fbx/obj 等交付文件里。
+    """
+    objs = _visible_geometry()
+    if include_floor:
+        objs = objs + [o for o in _scene().objects
+                       if o.type in _GEOMETRY_TYPES and o.get("kit_role") == "floor"]
+    return objs
+
+
+def _select_for_export(include_floor=False):
+    """选中应导出的几何对象（排除地台），返回 (目标列表, 是否用选择集导出)。
+
+    场景里没有任何可导出几何对象时返回 (空列表, False)，让导出器退回全场景模式，
+    避免导出空文件。
+    """
+    _ensure_object_mode()
+    targets = _export_targets(include_floor=include_floor)
+    try:
+        bpy.ops.object.select_all(action='DESELECT')
+    except Exception:
+        pass
+    for o in targets:
+        try:
+            o.select_set(True)
+        except Exception:
+            pass
+    if targets:
+        try:
+            bpy.context.view_layer.objects.active = targets[0]
+        except Exception:
+            pass
+    return targets, bool(targets)
 
 
 def save_blend(path):
@@ -1974,20 +2236,25 @@ def save_blend(path):
         return ""
 
 
-def export_glb(path):
-    """导出 glTF 二进制 .glb（模型/材质；默认不导出相机灯光）。
+def export_glb(path, include_floor=False):
+    """导出 glTF 二进制 .glb（模型/材质；默认不导出相机、灯光和摄影棚地台）。
+
+    只导出几何对象（自动排除 kit_role='floor' 的摄影棚地台），
+    场景中没有任何几何对象时退回「导出整个场景」以免产出空文件。
 
     参数:
         path: 输出路径（自动补 .glb 后缀）
+        include_floor: True 时把地台也导出（一般不需要，仅供预览场景用）
     返回:
         成功返回绝对路径，失败返回 ""（原因打到 log）
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".glb")
+    _, use_sel = _select_for_export(include_floor)
     attempts = [
-        dict(filepath=absp, export_format='GLB', use_selection=False, export_apply=True,
+        dict(filepath=absp, export_format='GLB', use_selection=use_sel, export_apply=True,
              export_cameras=False, export_lights=False, export_yup=True),
-        dict(filepath=absp, export_format='GLB'),
+        dict(filepath=absp, export_format='GLB', use_selection=use_sel),
     ]
     for i, kwargs in enumerate(attempts):
         try:
@@ -2002,22 +2269,27 @@ def export_glb(path):
     return ""
 
 
-def export_stl(path):
-    """导出 STL 网格。
+def export_stl(path, include_floor=False):
+    """导出 STL 网格（默认只导出几何对象，排除摄影棚地台）。
 
     Blender 4.0.2 里 STL 导出器是插件操作符 bpy.ops.export_mesh.stl（4.1+ 才有
     bpy.ops.wm.stl_export），这里自动尝试两种，取可用的那个。
 
     参数:
         path: 输出路径（自动补 .stl 后缀）
+        include_floor: True 时把地台也导出
     返回:
         成功返回绝对路径，失败返回 ""
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".stl")
+    targets, use_sel = _select_for_export(include_floor)
+    skipped = [getattr(o, "name", "?") for o in targets if getattr(o, "type", "") != 'MESH']
+    if skipped:
+        _warn("export_stl: STL 只支持网格，以下对象会丢失（先转网格）: %r" % (skipped,))
     calls = [
-        ("wm.stl_export", dict(filepath=absp)),
-        ("export_mesh.stl", dict(filepath=absp, use_selection=False, ascii=False,
+        ("wm.stl_export", dict(filepath=absp, use_selection=use_sel)),
+        ("export_mesh.stl", dict(filepath=absp, use_selection=use_sel, ascii=False,
                                  use_mesh_modifiers=True)),
     ]
     for op_name, kwargs in calls:
@@ -2035,17 +2307,19 @@ def export_stl(path):
     return ""
 
 
-def export_fbx(path):
-    """导出 FBX（插件 op export_scene.fbx；带修改器求值）。
+def export_fbx(path, include_floor=False):
+    """导出 FBX（插件 op export_scene.fbx；默认只导出几何对象、带修改器求值）。
 
     参数:
         path: 输出路径（自动补 .fbx 后缀）
+        include_floor: True 时把地台也导出
     返回:
         成功返回绝对路径，失败返回 ""
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".fbx")
-    kwargs = dict(filepath=absp, use_selection=False, use_mesh_modifiers=True,
+    _, use_sel = _select_for_export(include_floor)
+    kwargs = dict(filepath=absp, use_selection=use_sel, use_mesh_modifiers=True,
                   path_mode='AUTO', embed_textures=False)
     try:
         bpy.ops.export_scene.fbx(**kwargs)
@@ -2059,17 +2333,19 @@ def export_fbx(path):
     return ""
 
 
-def export_obj(path):
+def export_obj(path, include_floor=False):
     """导出 Wavefront OBJ（4.0 用 bpy.ops.wm.obj_export，不是旧的 export_scene.obj）。
 
     参数:
         path: 输出路径（自动补 .obj 后缀）
+        include_floor: True 时把地台也导出
     返回:
         成功返回绝对路径，失败返回 ""
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".obj")
-    kwargs = dict(filepath=absp, export_selected_objects=False, apply_modifiers=True,
+    _, use_sel = _select_for_export(include_floor)
+    kwargs = dict(filepath=absp, export_selected_objects=use_sel, apply_modifiers=True,
                   export_materials=True, export_normals=True, export_uv=True)
     try:
         bpy.ops.wm.obj_export(**kwargs)
@@ -2083,12 +2359,16 @@ def export_obj(path):
     return ""
 
 
-def export_all(out_dir, stem="model"):
+def export_all(out_dir, stem="model", include_floor=False):
     """导出交付必需的 blend + glb，并在 out_dir 的上一级保存 report.json。
+
+    blend 保留完整场景（含摄影棚地台/相机/灯光，方便重渲）；
+    glb 只含几何对象，默认排除摄影棚地台，适合直接进引擎/网页。
 
     参数:
         out_dir: 导出目录（通常是 <输出目录>/exports）
         stem: 文件名主干 -> <out_dir>/<stem>.blend、<out_dir>/<stem>.glb
+        include_floor: True 时 glb 也包含地台
     返回:
         {"blend": {"path","bytes"}, "glb": {...}, "report": {"path","bytes"}}
 
@@ -2101,7 +2381,7 @@ def export_all(out_dir, stem="model"):
     blend_path = save_blend(os.path.join(out_dir, "%s.blend" % stem))
     result["blend"] = {"path": blend_path,
                        "bytes": int(os.path.getsize(blend_path)) if blend_path and os.path.exists(blend_path) else 0}
-    glb_path = export_glb(os.path.join(out_dir, "%s.glb" % stem))
+    glb_path = export_glb(os.path.join(out_dir, "%s.glb" % stem), include_floor=include_floor)
     result["glb"] = {"path": glb_path,
                      "bytes": int(os.path.getsize(glb_path)) if glb_path and os.path.exists(glb_path) else 0}
     report_dir = os.path.dirname(out_dir)
@@ -2123,7 +2403,7 @@ def scene_report():
           "object_count": 场景全部对象数,
           "mesh_count": 网格对象数（不含 kit_role='floor' 的地台）,
           "camera_count", "light_count",
-          "total_verts", "total_tris", "non_manifold_edges": 网格统计（不含地台）,
+          "total_verts", "total_tris", "non_manifold_edges": 网格统计（含修改器求值；不含地台/切割体/隐藏对象）,
           "dimensions": [x,y,z] 包围盒尺寸（不含地台；无几何体时全 0）,
           "bbox_min", "bbox_max": 包围盒（不含地台；无几何体时全 0）,
           "materials": [材质名...],
@@ -2133,14 +2413,8 @@ def scene_report():
     """
     sc = _scene()
     objs = list(sc.objects)
-    floor_tagged = []
-    for o in objs:
-        try:
-            if o.get("kit_role") == "floor":
-                floor_tagged.append(o)
-        except Exception:
-            pass
-    model_meshes = [o for o in objs if o.type == 'MESH' and o not in floor_tagged]
+    visible = _visible_geometry()
+    model_meshes = [o for o in visible if o.type == 'MESH']
     total_verts = 0
     total_tris = 0
     non_manifold = 0
@@ -2149,7 +2423,7 @@ def scene_report():
         total_verts += int(st["verts"])
         total_tris += int(st["tris"])
         non_manifold += int(st["non_manifold_edges"])
-    bbox_objs = [o for o in objs if o.type in _GEOMETRY_TYPES and o not in floor_tagged]
+    bbox_objs = [o for o in visible if o.type in _GEOMETRY_TYPES]
     lo, hi = world_bbox(bbox_objs)
     if lo is None:
         dimensions = [0.0, 0.0, 0.0]
@@ -2161,7 +2435,7 @@ def scene_report():
         bbox_max = [round(hi[i], 6) for i in range(3)]
     mats = []
     seen = set()
-    for o in objs:
+    for o in visible:
         data = getattr(o, "data", None)
         if data is None:
             continue
@@ -2200,12 +2474,27 @@ def scene_report():
     }
 
 
+def _report_relpath(path, base):
+    """把记录中的绝对路径转成相对 base（report 目录）的可移植路径；越界时保留原值。"""
+    if not path:
+        return path
+    try:
+        rel = os.path.relpath(os.path.abspath(os.fspath(path)), base)
+    except Exception:
+        return path
+    if rel.startswith(".."):
+        return path
+    return rel.replace(os.sep, "/")
+
+
 def save_report(out_dir, extra=None):
     """把场景统计 + 渲染统计 + 导出结果 + 参数写进 <out_dir>/report.json。
 
     参数:
         out_dir: 报告目录（不存在会自动创建）
         extra: 可选 dict，合并进 report["params"]（可放建模参数）；同时原样写进 report["extra"]
+        说明：report 里的 renders/exports 路径一律写成相对 out_dir 的路径（用 / 分隔），
+              整个输出目录可以整体拷给别人、在别的机器上通过 check_output。
     返回:
         report.json 的绝对路径
     """
@@ -2216,8 +2505,18 @@ def save_report(out_dir, extra=None):
     report["scene"] = dict(scene)
     report["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     report["stage"] = stage()
-    report["renders"] = [dict(r) for r in _STATE["renders"]]
-    report["exports"] = {k: dict(v) for k, v in _STATE["exports"].items()}
+    renders = []
+    for r in _STATE["renders"]:
+        item = dict(r)
+        item["path"] = _report_relpath(item.get("path"), out_dir)
+        renders.append(item)
+    report["renders"] = renders
+    exports = {}
+    for kind, info in _STATE["exports"].items():
+        item = dict(info)
+        item["path"] = _report_relpath(item.get("path"), out_dir)
+        exports[kind] = item
+    report["exports"] = exports
     params = dict(_STATE.get("render_setup") or {})
     if isinstance(extra, dict):
         params.update(extra)
@@ -2321,7 +2620,7 @@ def kit_info():
 
 __all__ = [
     # 4.1
-    "reset_scene", "setup_world", "setup_studio_lights", "setup_floor",
+    "reset_scene", "open_blend", "setup_world", "setup_studio_lights", "setup_floor",
     "add_camera", "look_at", "fit_camera", "setup_scene",
     # 4.2
     "cube", "cylinder", "sphere", "cone", "torus", "plane", "tube", "text",

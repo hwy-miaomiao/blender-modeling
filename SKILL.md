@@ -1,6 +1,6 @@
 ---
 name: blender-modeling
-description: 用本机 Blender（headless bpy 脚本）把自然语言提示词做成真实可交付的 3D 模型：解析需求→结构拆解→写 bpy 建模脚本→无头多角度渲染→看图自检迭代→导出 .blend/.glb/.stl 与预览图。用户说「用 Blender 建模」「做个 3D 模型」「建个模」「低多边形××」「3D 场景」「改模型」「导出 glb/stl/blend」等时调用。完整规范在 AGENTS.md，动手前必须整篇读完。
+description: 用本机 Blender（headless bpy 脚本）把自然语言提示词做成真实可交付的 3D 模型：解析需求→结构拆解→写 bpy 建模脚本→无头多角度渲染→看图自检迭代→导出 .blend/.glb/.stl 与预览图；也支持打开已有 .blend 修改后重导出。用户说「用 Blender 建模」「做个 3D 模型」「建个模」「低多边形××」「3D 场景」「改模型」「导出 glb/stl/blend」等时调用。完整规范在 AGENTS.md，动手前必须整篇读完。
 ---
 
 # Blender 建模（blender-modeling）
@@ -27,6 +27,8 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 7. 交付闸门：`python scripts/check_output.py --out <输出目录>`
 8. 向用户交付：文件路径、怎么看预览、还能怎么改
 
+> **改已有模型（模式 B）**：不是从第 1 步开始——用 `templates/edit_model_template.py` 复制出 `model.py`，通过 `--blend <源.blend>` 打开现成模型，只填 `EDITS` 字典，然后同样走 build → render → full → 闸门。详见 `AGENTS.md` 第 10.5 节。
+
 ## 路径约定
 
 - `<技能目录>`：本文件所在目录（skill 工具会返回 base directory；`scripts/`、`lib/`、`templates/` 都在这里）
@@ -44,6 +46,8 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 | `references/bpy-cookbook.md` | 阶段 3-4：bpy 4.0 实测 API 与坑 |
 | `references/render-and-check.md` | 阶段 5-6：相机灯光参数与看图自检清单 |
 | `references/troubleshooting.md` | 报错时查：症状 / 原因 / 解决 |
+| `references/export-and-integration.md` | 导出和接引擎：格式怎么选、单位与坐标系、Three.js/Unity/UE/3D 打印 |
+| `templates/edit_model_template.py` | 模式 B：改已有 `.blend` 的模板与 `EDITS` 写法 |
 | `examples/` | 需要 few-shot 参考时看两个完整实测样例 |
 
 ## 交付时告诉用户

@@ -27,20 +27,23 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: 语法编译（lib / scripts / templates / examples）
-        run: python -m compileall -q lib scripts templates examples
+      - name: 语法编译（lib / scripts / templates / examples / tests）
+        run: python -m compileall -q lib scripts templates examples tests
 
       - name: 交付闸门纯函数自测
         run: python scripts/check_output.py --selftest
 
-      - name: 仓库静态检查（SKILL frontmatter / 示例产物 / 文档引用 / 绝对路径）
+      - name: 仓库静态检查（SKILL frontmatter / 示例产物 / GLB 资产 / 文档引用）
         run: python scripts/ci_check.py
+
+      - name: 单元测试（标准库 unittest，不需要 Blender）
+        run: python -m unittest discover -s tests -v
 
       - name: 行尾检查（仓库要求 LF；CRLF / 混合行尾直接失败）
         run: |
-          offenders="$(git ls-files --eol | grep -E '^i/(crlf|mixed)' || true)"
+          offenders="$(git grep --cached -I -l $'\r' || true)"
           if [ -n "$offenders" ]; then
-            echo "ERROR: 这些文件的索引里是 CRLF 或混合行尾（仓库要求 LF）："
+            echo "ERROR: 这些文件里含 CR（仓库要求 LF 行尾）："
             echo "$offenders"
             exit 1
           fi

@@ -56,9 +56,22 @@ _ERROR_RE = (
     re.compile(r"ModuleNotFoundError"),
 )
 
+# 弱错误行：脚本自己 print 的 "Error: ..." 或 Blender 的可恢复报错。退出码为 0 时
+# 降级成警告，避免正常脚本的诊断输出把整次运行判成失败。
+_SOFT_ERROR_RE = (
+    re.compile(r"^\s*Error:\s"),
+)
+
 _WARN_RE = (
     re.compile(r"^\s*Warning:\s"),
     re.compile(r"^\s*WARN(?:ING)?:\s"),
+)
+
+# Windows 保留文件名：日志名不能直接用（否则写入异常或落到奇怪位置）
+_WIN_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"] +
+    ["COM%d" % i for i in range(1, 10)] +
+    ["LPT%d" % i for i in range(1, 10)]
 )
 
 _VERSION_RE = re.compile(r"Blender\s+(\d+)\.(\d+)\.(\d+)")
@@ -124,13 +137,25 @@ def find_blender(explicit=None):
     """按优先级定位 Blender，返回可执行文件绝对路径；找不到返回 None。
 
     优先级：显式参数 > 环境变量 BLENDER_EXE > PATH > 常见安装路径。
+    显式参数 / BLENDER_EXE 一旦给了但文件不存在，直接返回 None（不静默回退，
+    避免用户以为用的是自己指定的版本）。
     """
-    candidates = []
+    def _existing(path):
+        if not path:
+            return None
+        try:
+            cand = os.path.abspath(os.path.expanduser(str(path)))
+        except (TypeError, ValueError):
+            return None
+        return cand if os.path.isfile(cand) else None
+
     if explicit:
-        candidates.append(explicit)
+        return _existing(explicit)
     env_exe = os.environ.get("BLENDER_EXE")
     if env_exe:
-        candidates.append(env_exe)
+        return _existing(env_exe)
+
+    candidates = []
     for name in ("blender", "blender.exe", "Blender"):
         found = shutil.which(name)
         if found:
@@ -149,6 +174,19 @@ def find_blender(explicit=None):
         if os.path.isfile(cand):
             return cand
     return None
+
+
+def _safe_label(label):
+    """把 --label 清洗成安全文件名前缀（防 NTFS ADS、路径穿越、Windows 保留名）。"""
+    raw = str(label or "").strip()
+    cleaned = re.sub(r"[^0-9A-Za-z_.-]+", "_", raw).strip("._-")
+    if not cleaned:
+        cleaned = "run"
+    if len(cleaned) > 64:
+        cleaned = cleaned[:64]
+    if cleaned.upper() in _WIN_RESERVED:
+        cleaned = "run_" + cleaned
+    return cleaned
 
 
 def blender_version(exe, timeout=30):
@@ -193,9 +231,13 @@ def _uniq(seq, cap=25):
     return out
 
 
-def classify_log(text):
-    """从 Blender 日志中提取错误行与警告行（去重、过滤已知噪音）。"""
-    errors, warnings = [], []
+def classify_log(text, demote_soft=False):
+    """从 Blender 日志中提取错误行与警告行（去重、过滤已知噪音）。
+
+    demote_soft=True 时，弱错误行（脚本自己 print 的 "Error: ..." 等）降级为警告，
+    用于退出码为 0 的正常运行。
+    """
+    errors, warnings, soft = [], [], []
     for raw in (text or "").splitlines():
         line = raw.rstrip()
         if not line.strip():
@@ -204,9 +246,17 @@ def classify_log(text):
             continue
         stripped = line.strip()
         if any(rx.search(stripped) for rx in _ERROR_RE):
-            errors.append(stripped)
+            if any(rx.search(stripped) for rx in _SOFT_ERROR_RE):
+                soft.append(stripped)
+            else:
+                errors.append(stripped)
         elif any(rx.search(stripped) for rx in _WARN_RE):
             warnings.append(stripped)
+    if soft:
+        if demote_soft:
+            warnings.extend(soft)
+        else:
+            errors.extend(soft)
     return _uniq(errors), _uniq(warnings)
 
 
@@ -273,7 +323,21 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
         _print_result(result, quiet)
         return result
 
-    exe = blender or find_blender()
+    explicit_exe = blender or os.environ.get("BLENDER_EXE")
+    if explicit_exe:
+        try:
+            exe = os.path.abspath(os.path.expanduser(str(explicit_exe)))
+        except (TypeError, ValueError):
+            exe = ""
+        if not exe or not os.path.isfile(exe):
+            result["errors"] = [
+                "指定的 Blender 不存在: %s（来自 --blender 或环境变量 BLENDER_EXE，"
+                "不会静默回退到其它 Blender）" % explicit_exe
+            ]
+            _print_result(result, quiet)
+            return result
+    else:
+        exe = find_blender()
     if not exe:
         result["errors"] = [
             "找不到 Blender：请安装 Blender 4.x，或设置环境变量 BLENDER_EXE/--blender 指向 blender.exe"
@@ -290,7 +354,12 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
         _print_result(result, quiet)
         return result
 
-    log_name = "%s-%s.log" % (label or stage, time.strftime("%Y%m%d-%H%M%S"))
+    raw_label = str(label or stage)
+    safe_label = _safe_label(raw_label)
+    if safe_label != raw_label:
+        result["warnings"].append(
+            "label %r 含非法字符，日志名已清洗为 %r" % (raw_label, safe_label))
+    log_name = "%s-%s.log" % (safe_label, time.strftime("%Y%m%d-%H%M%S"))
     log_path = os.path.join(out_dir, "logs", log_name)
     result["log"] = log_path
 
@@ -341,13 +410,20 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
     except OSError as exc:
         result["warnings"].append("写日志失败: %s" % exc)
 
-    errors, warnings = classify_log(output)
+    errors, warnings = classify_log(output, demote_soft=(exit_code == 0))
     if timed_out:
         errors.insert(0, "TIMEOUT: 超过 %ss 未结束" % timeout)
     if exit_code != 0 and not timed_out and not errors:
         errors.insert(0, "Blender 退出码 %s（日志无明确错误行，检查日志尾部）" % exit_code)
 
     artifacts = _list_artifacts(out_dir)
+    # 阶段产物闸门：render/full 必须真的有渲染图；full 还必须有导出文件。
+    # 防「假 Blender 直接 exit 0」把空跑当成功。
+    if not timed_out and exit_code == 0:
+        if stage in ("render", "full") and not artifacts["renders"]:
+            errors.append("阶段 %s 没有产出任何渲染图（renders/ 为空）" % stage)
+        if stage == "full" and not artifacts["exports"]:
+            errors.append("阶段 full 没有产出任何导出文件（exports/ 为空）")
     result.update({
         "ok": (not timed_out) and exit_code == 0 and not errors,
         "exit_code": exit_code,

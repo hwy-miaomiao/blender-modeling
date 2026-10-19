@@ -1,6 +1,6 @@
 # blender-modeling — 用 Blender 按提示词建模的 Agent Skill
 
-给 DeepSeek Harness（以及其它支持 Agent Skill 的 AI 工具）用的技能：用户输入一句建模提示词，AI 生成 bpy 脚本、用本机 Blender 无头（headless）建模、渲染多角度预览、看图自检并迭代，最后交付可用的 3D 资产。
+给 DeepSeek Harness（以及其它支持 Agent Skill 的 AI 工具）用的技能：用户输入一句建模提示词，AI 生成 bpy 脚本、用本机 Blender 无头（headless）建模、渲染多角度预览、看图自检并迭代，最后交付可用的 3D 资产。也支持**打开已有 `.blend` 修改后重导出**（模式 B）。
 
 [![ci](https://github.com/hwy-miaomiao/blender-modeling/actions/workflows/ci.yml/badge.svg)](https://github.com/hwy-miaomiao/blender-modeling/actions/workflows/ci.yml)
 · GitHub：[hwy-miaomiao/blender-modeling](https://github.com/hwy-miaomiao/blender-modeling)
@@ -33,10 +33,11 @@
 
 ## 安装（三选一）
 
-**方式 A：项目级（推荐，本仓库已注册）**
+**方式 A：项目级（推荐）**
 
 ```powershell
-cmd /c mklink /J "F:\DeepSeek Harness\.dsh\skills\blender-modeling" "F:\DeepSeek Harness\blender-modeling"
+# 让 <工作区>\.dsh\skills\blender-modeling 指向本目录（示例中的 <工作区> 换成你的项目根目录）
+cmd /c mklink /J "<工作区>\.dsh\skills\blender-modeling" "<本仓库的实际路径>"
 ```
 
 **方式 B：用户级（所有项目可用）**
@@ -67,21 +68,29 @@ git clone git@github.com:hwy-miaomiao/blender-modeling.git "$env:USERPROFILE\.ag
 
 在 Harness 里直接说「用 Blender 建一个 XXX 的模型」或输入 `/blender-modeling 低多边形马克杯`，AI 会按 `AGENTS.md` 的流程执行。
 
-也可以手动跑：
+也可以手动跑（先 `cd` 到本技能目录，`scripts/` 均指相对路径）：
 
 ```powershell
 # 0. 体检（有 FAIL 先修环境）
-python "F:\DeepSeek Harness\blender-modeling\scripts\doctor.py" --smoke
+python scripts\doctor.py --smoke
 
 # 1. 执行建模脚本（build 阶段快速暴露 bpy 错误，full 阶段渲染+导出）
-python "F:\DeepSeek Harness\blender-modeling\scripts\run_blender.py" `
-  --script "blender-models\mug\model.py" --out "blender-models\mug" --stage full
+python scripts\run_blender.py --script "blender-models\mug\model.py" --out "blender-models\mug" --stage full
 
 # 2. 交付闸门（0 ERROR 才算过）
-python "F:\DeepSeek Harness\blender-modeling\scripts\check_output.py" --out "blender-models\mug"
+python scripts\check_output.py --out "blender-models\mug"
 
 # 3. 可选：渲染图拼联系表
-python "F:\DeepSeek Harness\blender-modeling\scripts\contact_sheet.py" --out "blender-models\mug"
+python scripts\contact_sheet.py --out "blender-models\mug"
+```
+
+**模式 B：改已有模型**（把源 `.blend` 换成你的文件）：
+
+```powershell
+Copy-Item templates\edit_model_template.py "<输出目录>\model.py"
+# 编辑 model.py 顶部 EDITS 字典（translate / rotate / scale / material / hide）
+python scripts\run_blender.py --script "<输出目录>\model.py" --out "<输出目录>" --stage full -- --blend "<源模型>\exports\model.blend"
+python scripts\check_output.py --out "<输出目录>"
 ```
 
 ## 目录结构
@@ -96,9 +105,12 @@ python "F:\DeepSeek Harness\blender-modeling\scripts\contact_sheet.py" --out "bl
 | `scripts/contact_sheet.py` | 渲染图拼联系表（可选，需要 Pillow） |
 | `scripts/ci_check.py` | 仓库静态检查（frontmatter / 示例产物 / 文档引用 / 绝对路径；无需 Blender） |
 | `lib/blender_kit.py` | 在 Blender 进程内 import 的辅助库（图元/材质/灯光相机/渲染/导出） |
-| `templates/model_template.py` | 建模脚本骨架 |
-| `references/` | 提示词解析、配方库、bpy 速查、渲染自检、报错知识库 |
-| `examples/` | 两个完整实测样例（few-shot 参考） |
+| `templates/model_template.py` | 建模脚本骨架（模式 A） |
+| `templates/edit_model_template.py` | 修改已有模型模板（模式 B：`EDITS` 字典 + `--blend`） |
+| `references/` | 提示词解析、配方库、bpy 速查、渲染自检、报错知识库、导出与引擎接入 |
+| `tests/` | 回归测试：CI 用 unittest（无需 Blender）+ 手动 Blender 冒烟/审计回归 |
+| `examples/` | 两个完整实测样例（few-shot 参考，含可打开的 `.blend` / `.glb`） |
+| `CHANGELOG.md` | 版本改动记录 |
 
 ## 自测与 CI
 
@@ -107,10 +119,12 @@ python "F:\DeepSeek Harness\blender-modeling\scripts\contact_sheet.py" --out "bl
 ```powershell
 python scripts\check_output.py --selftest   # 交付闸门的纯函数自测
 python scripts\ci_check.py                  # 仓库静态检查，必须 0 ERROR
+python -m unittest discover -s tests -v     # 单元/契约测试（含 ci_check、check_output、bl_common）
 ```
 
 GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.9 与 3.12 上跑同一套检查，外加 `compileall` 与
 LF 行尾检查；它**不调用 Blender**，真实建模与看图验收在本地按 `AGENTS.md` 第 17 节闸门表完成。
+改过 `lib/blender_kit.py` 后，本地再跑一次 `tests/kit_regression.blender.py`（见 `tests/README.md`）。
 
 ## 常见问题
 
