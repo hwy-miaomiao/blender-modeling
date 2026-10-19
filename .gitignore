@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 建模产物不随技能本体提交（产物写到用户工作区 blender-models/）
+blender-models/
+outputs/
+*.blend1
+
+# 临时/系统文件
+.tmp/
+.DS_Store
+Thumbs.db

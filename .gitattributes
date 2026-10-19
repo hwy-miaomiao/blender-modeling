@@ -1,0 +1,15 @@
+# 统一换行：仓库里一律 LF，检出时不按平台自动改写
+* text=auto eol=lf
+
+# 二进制资源不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.blend binary
+*.glb binary
+*.stl binary
+*.fbx binary
+*.exr binary
+*.ttf binary
+*.otf binary

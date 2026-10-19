@@ -1,0 +1,283 @@
+{
+  "object_count": 6,
+  "mesh_count": 1,
+  "camera_count": 1,
+  "light_count": 3,
+  "total_verts": 912,
+  "total_tris": 1816,
+  "non_manifold_edges": 0,
+  "dimensions": [
+    0.153607,
+    0.145134,
+    0.099
+  ],
+  "bbox_min": [
+    -0.062673,
+    -0.082461,
+    0.0
+  ],
+  "bbox_max": [
+    0.090934,
+    0.062673,
+    0.099
+  ],
+  "materials": [
+    "FloorMat",
+    "mug_ceramic",
+    "mug_accent"
+  ],
+  "blender_version": "4.0.2",
+  "engine": "CYCLES",
+  "scene": {
+    "object_count": 6,
+    "mesh_count": 1,
+    "camera_count": 1,
+    "light_count": 3,
+    "total_verts": 912,
+    "total_tris": 1816,
+    "non_manifold_edges": 0,
+    "dimensions": [
+      0.153607,
+      0.145134,
+      0.099
+    ],
+    "bbox_min": [
+      -0.062673,
+      -0.082461,
+      0.0
+    ],
+    "bbox_max": [
+      0.090934,
+      0.062673,
+      0.099
+    ],
+    "materials": [
+      "FloorMat",
+      "mug_ceramic",
+      "mug_accent"
+    ],
+    "blender_version": "4.0.2",
+    "engine": "CYCLES"
+  },
+  "generated_at": "2026-10-19T22:13:31",
+  "stage": "full",
+  "renders": [
+    {
+      "path": "renders/view-front.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 255347,
+      "mean": 164.3146,
+      "std": 61.6762,
+      "black_ratio": 0.0,
+      "label": "front",
+      "seconds": 1.561
+    },
+    {
+      "path": "renders/view-iso.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 271556,
+      "mean": 177.2757,
+      "std": 22.9747,
+      "black_ratio": 0.0,
+      "label": "iso",
+      "seconds": 1.586
+    },
+    {
+      "path": "renders/view-right.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 260301,
+      "mean": 152.2387,
+      "std": 56.1803,
+      "black_ratio": 0.0,
+      "label": "right",
+      "seconds": 1.425
+    }
+  ],
+  "exports": {
+    "blend": {
+      "path": "exports/model.blend",
+      "bytes": 574728
+    },
+    "glb": {
+      "path": "exports/model.glb",
+      "bytes": 126328
+    }
+  },
+  "extra": {
+    "slug": "lowpoly-mug",
+    "objects": [
+      "mug"
+    ],
+    "params": {
+      "scene": {
+        "target": [
+          0.0,
+          0.0,
+          0.05
+        ],
+        "distance": 3.0,
+        "azimuth": -45.0,
+        "elevation": 22.0,
+        "lens": 50.0,
+        "studio": true,
+        "floor": false
+      },
+      "floor": {
+        "size": 12.0,
+        "color": [
+          0.07,
+          0.075,
+          0.085
+        ],
+        "roughness": 0.55
+      },
+      "body": {
+        "radius": 0.045,
+        "height": 0.091,
+        "vertices": 24,
+        "wall_thickness": 0.006,
+        "bottom_thickness": 0.008,
+        "cavity_depth": 0.12,
+        "rim_bevel": 0.0012,
+        "rim_segments": 2
+      },
+      "foot": {
+        "radius": 0.043,
+        "height": 0.008
+      },
+      "handle": {
+        "major_radius": 0.027,
+        "minor_radius": 0.0055,
+        "offset_x": 0.047,
+        "height_ratio": 0.55,
+        "yaw_deg": -35.0
+      },
+      "colors": {
+        "ceramic": [
+          0.86,
+          0.86,
+          0.84
+        ],
+        "accent": [
+          0.16,
+          0.4,
+          0.7
+        ]
+      },
+      "render": {
+        "engine": "CYCLES",
+        "views": [
+          "front",
+          "right",
+          "iso"
+        ],
+        "preview": {
+          "resolution": 512,
+          "samples": 16,
+          "denoise": true
+        }
+      },
+      "export": {
+        "stem": "model"
+      }
+    }
+  },
+  "params": {
+    "engine": "CYCLES",
+    "engine_requested": "CYCLES",
+    "samples": 16,
+    "resolution": [
+      512,
+      512
+    ],
+    "transparent": false,
+    "denoise": true,
+    "film_exposure": 1.0,
+    "look": "AgX - Medium High Contrast",
+    "color_look": "AgX - Medium High Contrast",
+    "view_transform": "AgX",
+    "image_format": "PNG",
+    "slug": "lowpoly-mug",
+    "objects": [
+      "mug"
+    ],
+    "params": {
+      "scene": {
+        "target": [
+          0.0,
+          0.0,
+          0.05
+        ],
+        "distance": 3.0,
+        "azimuth": -45.0,
+        "elevation": 22.0,
+        "lens": 50.0,
+        "studio": true,
+        "floor": false
+      },
+      "floor": {
+        "size": 12.0,
+        "color": [
+          0.07,
+          0.075,
+          0.085
+        ],
+        "roughness": 0.55
+      },
+      "body": {
+        "radius": 0.045,
+        "height": 0.091,
+        "vertices": 24,
+        "wall_thickness": 0.006,
+        "bottom_thickness": 0.008,
+        "cavity_depth": 0.12,
+        "rim_bevel": 0.0012,
+        "rim_segments": 2
+      },
+      "foot": {
+        "radius": 0.043,
+        "height": 0.008
+      },
+      "handle": {
+        "major_radius": 0.027,
+        "minor_radius": 0.0055,
+        "offset_x": 0.047,
+        "height_ratio": 0.55,
+        "yaw_deg": -35.0
+      },
+      "colors": {
+        "ceramic": [
+          0.86,
+          0.86,
+          0.84
+        ],
+        "accent": [
+          0.16,
+          0.4,
+          0.7
+        ]
+      },
+      "render": {
+        "engine": "CYCLES",
+        "views": [
+          "front",
+          "right",
+          "iso"
+        ],
+        "preview": {
+          "resolution": 512,
+          "samples": 16,
+          "denoise": true
+        }
+      },
+      "export": {
+        "stem": "model"
+      }
+    }
+  },
+  "warnings": [],
+  "kit_version": "1.0.0"
+}

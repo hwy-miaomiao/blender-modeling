@@ -1,0 +1,407 @@
+{
+  "object_count": 10,
+  "mesh_count": 5,
+  "camera_count": 1,
+  "light_count": 3,
+  "total_verts": 592,
+  "total_tris": 1100,
+  "non_manifold_edges": 0,
+  "dimensions": [
+    0.6245,
+    0.6383,
+    0.952438
+  ],
+  "bbox_min": [
+    -0.2925,
+    -0.31915,
+    0.0
+  ],
+  "bbox_max": [
+    0.332,
+    0.31915,
+    0.952438
+  ],
+  "materials": [
+    "FloorMat",
+    "chair_frame",
+    "chair_rubber",
+    "chair_fabric"
+  ],
+  "blender_version": "4.0.2",
+  "engine": "CYCLES",
+  "scene": {
+    "object_count": 10,
+    "mesh_count": 5,
+    "camera_count": 1,
+    "light_count": 3,
+    "total_verts": 592,
+    "total_tris": 1100,
+    "non_manifold_edges": 0,
+    "dimensions": [
+      0.6245,
+      0.6383,
+      0.952438
+    ],
+    "bbox_min": [
+      -0.2925,
+      -0.31915,
+      0.0
+    ],
+    "bbox_max": [
+      0.332,
+      0.31915,
+      0.952438
+    ],
+    "materials": [
+      "FloorMat",
+      "chair_frame",
+      "chair_rubber",
+      "chair_fabric"
+    ],
+    "blender_version": "4.0.2",
+    "engine": "CYCLES"
+  },
+  "generated_at": "2026-10-19T22:15:49",
+  "stage": "full",
+  "renders": [
+    {
+      "path": "renders/view-front.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 272203,
+      "mean": 127.1335,
+      "std": 50.2182,
+      "black_ratio": 0.0,
+      "label": "front",
+      "seconds": 1.428
+    },
+    {
+      "path": "renders/view-iso.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 295912,
+      "mean": 143.3747,
+      "std": 31.6033,
+      "black_ratio": 0.0,
+      "label": "iso",
+      "seconds": 1.418
+    },
+    {
+      "path": "renders/view-right.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 271334,
+      "mean": 117.5145,
+      "std": 49.8053,
+      "black_ratio": 0.0,
+      "label": "right",
+      "seconds": 1.141
+    }
+  ],
+  "exports": {
+    "blend": {
+      "path": "exports/model.blend",
+      "bytes": 576752
+    },
+    "glb": {
+      "path": "exports/model.glb",
+      "bytes": 79084
+    }
+  },
+  "extra": {
+    "slug": "office-chair",
+    "objects": [
+      "office-chair_base",
+      "office-chair_lift",
+      "office-chair_seat",
+      "office-chair_back",
+      "office-chair_arms"
+    ],
+    "params": {
+      "scene": {
+        "target": [
+          0.0,
+          0.0,
+          0.5
+        ],
+        "distance": 3.0,
+        "azimuth": -45.0,
+        "elevation": 20.0,
+        "lens": 50.0,
+        "studio": true,
+        "floor": false
+      },
+      "floor": {
+        "size": 12.0,
+        "color": [
+          0.07,
+          0.075,
+          0.085
+        ],
+        "roughness": 0.55
+      },
+      "base": {
+        "hub_radius": 0.065,
+        "hub_depth": 0.06,
+        "hub_z": 0.09,
+        "hub_vertices": 16,
+        "leg_count": 5,
+        "leg_length": 0.3,
+        "leg_width": 0.05,
+        "leg_thickness": 0.035,
+        "leg_z": 0.075,
+        "caster_radius": 0.032,
+        "caster_width": 0.022,
+        "caster_vertices": 12
+      },
+      "lift": {
+        "radius": 0.028,
+        "height": 0.3,
+        "z_center": 0.27,
+        "vertices": 16,
+        "shroud_radius1": 0.06,
+        "shroud_radius2": 0.038,
+        "shroud_height": 0.12,
+        "shroud_z": 0.18
+      },
+      "seat": {
+        "size": [
+          0.5,
+          0.48,
+          0.09
+        ],
+        "z": 0.4,
+        "bevel": 0.025,
+        "bevel_segments": 3
+      },
+      "back": {
+        "size": [
+          0.46,
+          0.07,
+          0.5
+        ],
+        "y": -0.21,
+        "z": 0.7,
+        "tilt": 8.0,
+        "bevel": 0.028,
+        "bevel_segments": 3,
+        "post_size": [
+          0.05,
+          0.06,
+          0.18
+        ],
+        "post_x": 0.13,
+        "post_y": -0.19,
+        "post_z": 0.46
+      },
+      "arm": {
+        "x": 0.255,
+        "post_size": [
+          0.045,
+          0.05,
+          0.2
+        ],
+        "post_y": 0.02,
+        "post_z": 0.5,
+        "pad_size": [
+          0.075,
+          0.26,
+          0.035
+        ],
+        "pad_y": -0.01,
+        "pad_z": 0.615,
+        "pad_bevel": 0.012,
+        "pad_bevel_segments": 2
+      },
+      "colors": {
+        "fabric": [
+          0.05,
+          0.055,
+          0.065
+        ],
+        "frame": [
+          0.28,
+          0.29,
+          0.31
+        ],
+        "rubber": [
+          0.02,
+          0.02,
+          0.022
+        ]
+      },
+      "render": {
+        "engine": "CYCLES",
+        "views": [
+          "front",
+          "right",
+          "iso"
+        ],
+        "preview": {
+          "resolution": 512,
+          "samples": 16,
+          "denoise": true
+        }
+      },
+      "export": {
+        "stem": "model"
+      }
+    }
+  },
+  "params": {
+    "engine": "CYCLES",
+    "engine_requested": "CYCLES",
+    "samples": 16,
+    "resolution": [
+      512,
+      512
+    ],
+    "transparent": false,
+    "denoise": true,
+    "film_exposure": 1.0,
+    "look": "AgX - Medium High Contrast",
+    "color_look": "AgX - Medium High Contrast",
+    "view_transform": "AgX",
+    "image_format": "PNG",
+    "slug": "office-chair",
+    "objects": [
+      "office-chair_base",
+      "office-chair_lift",
+      "office-chair_seat",
+      "office-chair_back",
+      "office-chair_arms"
+    ],
+    "params": {
+      "scene": {
+        "target": [
+          0.0,
+          0.0,
+          0.5
+        ],
+        "distance": 3.0,
+        "azimuth": -45.0,
+        "elevation": 20.0,
+        "lens": 50.0,
+        "studio": true,
+        "floor": false
+      },
+      "floor": {
+        "size": 12.0,
+        "color": [
+          0.07,
+          0.075,
+          0.085
+        ],
+        "roughness": 0.55
+      },
+      "base": {
+        "hub_radius": 0.065,
+        "hub_depth": 0.06,
+        "hub_z": 0.09,
+        "hub_vertices": 16,
+        "leg_count": 5,
+        "leg_length": 0.3,
+        "leg_width": 0.05,
+        "leg_thickness": 0.035,
+        "leg_z": 0.075,
+        "caster_radius": 0.032,
+        "caster_width": 0.022,
+        "caster_vertices": 12
+      },
+      "lift": {
+        "radius": 0.028,
+        "height": 0.3,
+        "z_center": 0.27,
+        "vertices": 16,
+        "shroud_radius1": 0.06,
+        "shroud_radius2": 0.038,
+        "shroud_height": 0.12,
+        "shroud_z": 0.18
+      },
+      "seat": {
+        "size": [
+          0.5,
+          0.48,
+          0.09
+        ],
+        "z": 0.4,
+        "bevel": 0.025,
+        "bevel_segments": 3
+      },
+      "back": {
+        "size": [
+          0.46,
+          0.07,
+          0.5
+        ],
+        "y": -0.21,
+        "z": 0.7,
+        "tilt": 8.0,
+        "bevel": 0.028,
+        "bevel_segments": 3,
+        "post_size": [
+          0.05,
+          0.06,
+          0.18
+        ],
+        "post_x": 0.13,
+        "post_y": -0.19,
+        "post_z": 0.46
+      },
+      "arm": {
+        "x": 0.255,
+        "post_size": [
+          0.045,
+          0.05,
+          0.2
+        ],
+        "post_y": 0.02,
+        "post_z": 0.5,
+        "pad_size": [
+          0.075,
+          0.26,
+          0.035
+        ],
+        "pad_y": -0.01,
+        "pad_z": 0.615,
+        "pad_bevel": 0.012,
+        "pad_bevel_segments": 2
+      },
+      "colors": {
+        "fabric": [
+          0.05,
+          0.055,
+          0.065
+        ],
+        "frame": [
+          0.28,
+          0.29,
+          0.31
+        ],
+        "rubber": [
+          0.02,
+          0.02,
+          0.022
+        ]
+      },
+      "render": {
+        "engine": "CYCLES",
+        "views": [
+          "front",
+          "right",
+          "iso"
+        ],
+        "preview": {
+          "resolution": 512,
+          "samples": 16,
+          "denoise": true
+        }
+      },
+      "export": {
+        "stem": "model"
+      }
+    }
+  },
+  "warnings": [],
+  "kit_version": "1.0.0"
+}
