@@ -3,6 +3,8 @@
 > 用本技能 kit 把人物做成**静态风格化模型**（Q 版 / 卡通比例 / 写实简化），交付几何 + 材质 + 预览图 + `.blend`/`.glb`。
 > 通用骨架、六条硬规则、输出目录与闸门一律照 `AGENTS.md` 与 `references/modeling-recipes.md`；本文只补**人物特有**的知识。
 
+> 效果预览：![人物建模示例（Q 版人物 / 招手人物）](../docs/previews/character.png)
+
 ## 坐标系与人像约定
 
 - 1 Blender unit = 1 m，Z 向上；人物**正面朝 +Y**（kit 的 front 相机在 +Y 侧看向原点）。

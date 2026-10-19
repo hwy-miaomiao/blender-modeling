@@ -12,8 +12,9 @@
 5. 交付 GLB 只含几何体：不得出现摄影棚地台（Floor/FloorMat）、布尔 cutter、.001 重名
 6. CI workflow 必须包含语法检查、自测、仓库检查、单元测试四类步骤
 7. 领域技巧文档（建筑/人物/动物/植物）：10 节结构齐全、python 块可编译、无盘符绝对路径
-8. 文档引用审计：规范/README/参考文档里提到的 references/*.md、lib|scripts|templates/*.py 必须真实存在
-9. 仓库约定文件：LICENSE、.gitignore、.gitattributes、CI workflow 存在
+8. 领域效果预览图：4 张 PNG 存在、尺寸与体积达标，且 README 与对应领域文档都引用
+9. 文档引用审计：规范/README/参考文档里提到的 references/*.md、lib|scripts|templates/*.py 必须真实存在
+10. 仓库约定文件：LICENSE、.gitignore、.gitattributes、CI workflow 存在
 
 用法：
     python scripts/ci_check.py [--root <仓库根目录>]
@@ -59,6 +60,11 @@ REQUIRED_FILES = [
     "references/plant-modeling.md",
     "templates/edit_model_template.py",
     "CHANGELOG.md",
+    "docs/previews/README.md",
+    "docs/previews/architecture.png",
+    "docs/previews/character.png",
+    "docs/previews/animal.png",
+    "docs/previews/plant.png",
     "tests/README.md",
     "tests/test_cli_contract.py",
     "tests/test_bl_common.py",
@@ -121,6 +127,17 @@ DOMAIN_SECTIONS = [
 DOMAIN_MIN_LINES = 250
 DOMAIN_MIN_BLOCKS = 6
 PY_BLOCK_RE = re.compile(r"```python[ \t]*\n(.*?)```", re.S)
+
+# 领域效果预览图：<领域> -> 必须引用它的领域文档
+DOMAIN_PREVIEWS = {
+    "architecture": "references/architecture-modeling.md",
+    "character": "references/character-modeling.md",
+    "animal": "references/animal-modeling.md",
+    "plant": "references/plant-modeling.md",
+}
+PREVIEW_MIN_WIDTH = 1024
+PREVIEW_MIN_HEIGHT = 600
+PREVIEW_MIN_BYTES = 50 * 1024
 
 REF_MD_RE = re.compile(r"(?<![\w/.\\-])(references/[A-Za-z0-9_.-]+\.md)")
 REF_PY_RE = re.compile(r"(?<![\w/.\\-])((?:lib|scripts|templates)/[A-Za-z0-9_.-]+\.py)")
@@ -529,7 +546,44 @@ class Checker:
             else:
                 self.ok(f"{rel} 结构完整（{lines} 行 / {len(blocks)} 个 python 块 / 10 节齐全）")
 
-    # ---- 7. 文档引用 ----
+    # ---- 8. 领域效果预览 ----
+    def check_previews(self) -> None:
+        readme = self.read_text("README.md") if self.exists("README.md") else ""
+        for name, doc_rel in DOMAIN_PREVIEWS.items():
+            rel = f"docs/previews/{name}.png"
+            bad = 0
+            if not self.exists(rel):
+                self.error(f"缺少预览图：{rel}")
+                continue
+            size = os.path.getsize(self.path(rel))
+            if size < PREVIEW_MIN_BYTES:
+                self.error(f"{rel} 体积过小（{size} B < {PREVIEW_MIN_BYTES} B），可能是占位图")
+                bad += 1
+            dims = self._png_size(self.read_head(rel, 24))
+            if dims is None:
+                self.error(f"{rel} 不是合法 PNG")
+                bad += 1
+            else:
+                width, height = dims
+                if width < PREVIEW_MIN_WIDTH or height < PREVIEW_MIN_HEIGHT:
+                    self.error(
+                        f"{rel} 尺寸过小（{width}x{height} < "
+                        f"{PREVIEW_MIN_WIDTH}x{PREVIEW_MIN_HEIGHT}）"
+                    )
+                    bad += 1
+            if f"docs/previews/{name}.png" not in readme:
+                self.error(f"README.md 未引用预览图 docs/previews/{name}.png")
+                bad += 1
+            if self.exists(doc_rel) and f"docs/previews/{name}.png" not in self.read_text(doc_rel):
+                self.error(f"{doc_rel} 未引用预览图 docs/previews/{name}.png")
+                bad += 1
+            if bad == 0:
+                self.ok(
+                    f"{rel} 预览图正常（{dims[0]}x{dims[1]} / {size // 1024} KB，"
+                    "README 与领域文档均已引用）"
+                )
+
+    # ---- 9. 文档引用 ----
     def check_doc_references(self) -> None:
         missing = set()
         checked = 0
@@ -561,6 +615,7 @@ class Checker:
         self.check_python_syntax()
         self.check_ci_workflow()
         self.check_domain_docs()
+        self.check_previews()
         self.check_doc_references()
         print(f"=== 结果: {self.passes} PASS / {self.errors} ERROR / {self.warns} WARN ===")
         if self.errors:

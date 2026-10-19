@@ -4,6 +4,8 @@
 > 读法：先读 `AGENTS.md` 全流程 → §1 定风格 → §2 拆结构 → §3 查尺寸 → §4 选技巧 → §5 抄配方 → §6-§9 配色/机位/排错/自检 → §10 是本文所有数字的实测出处。
 > 代码块默认接在通用骨架 `build()` 里：`from blender_kit import *`、`import math`、`PARAMS` 已就位，路径只用 `BLENDER_KIT_DIR` / `BLENDER_OUT_DIR` 推导。
 
+> 效果预览：![建筑建模示例（双层联排住宅 / 石拱桥）](../docs/previews/architecture.png)
+
 ⚠ **坐标系与朝向**（与 modeling-recipes.md §0 一致，建筑再强调）：1 unit = 1 米；Z 向上；**+Y 是正面**（kit 的 front 相机在 +Y 侧）；入口、主立面一律朝 +Y；+X 是建筑右侧（在 `view-front.png` 里显示为画面左侧，别用画面左右描述朝向）。逻辑组 `join` 后 `set_origin(group, "BOTTOM")`，地面 z=0；场景 target 取 `总高 × 0.45~0.55`。
 
 ## 1. 适用范围与风格分级

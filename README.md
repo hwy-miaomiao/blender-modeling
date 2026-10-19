@@ -24,12 +24,33 @@
 
 ## 效果预览
 
-下面两张预览图由技能自身流程从一句提示词生成，对应 `examples/` 里的两个完整样例（含可复现的 `model.py`，
-以及可直接打开的 `.blend` / `.glb`）：
+以下预览图都由技能自身流程生成（一句提示词 → `model.py` → 无头渲染 → `read_image` 看图迭代），
+不是手工建模后截的图。
+
+**基础样例**（对应 `examples/` 里两个完整样例，含可复现的 `model.py` 与可直接打开的 `.blend` / `.glb`）：
 
 | 低多边形马克杯 `examples/lowpoly-mug` | 办公椅 `examples/office-chair` |
 | --- | --- |
 | ![lowpoly-mug](examples/lowpoly-mug/renders/view-iso.png) | ![office-chair](examples/office-chair/renders/view-iso.png) |
+
+**领域题材**（左/右各一个实测代表题材，尺寸、面数与迭代记录见对应领域文档 §10；
+拼图说明见 [`docs/previews/README.md`](docs/previews/README.md)）：
+
+| [建筑建模](references/architecture-modeling.md)：双层联排住宅 / 石拱桥 |
+| --- |
+| ![建筑建模效果预览](docs/previews/architecture.png) |
+
+| [人物建模](references/character-modeling.md)：Q 版人物（3 头身）/ 招手人物（4.8 头身） |
+| --- |
+| ![人物建模效果预览](docs/previews/character.png) |
+
+| [动物建模](references/animal-modeling.md)：低模猫 / 展翅海鸥 |
+| --- |
+| ![动物建模效果预览](docs/previews/animal.png) |
+
+| [植物建模](references/plant-modeling.md)：阔叶树 / 花坛 |
+| --- |
+| ![植物建模效果预览](docs/previews/plant.png) |
 
 ## 安装（三选一）
 
@@ -108,6 +129,7 @@ python scripts\check_output.py --out "<输出目录>"
 | `templates/model_template.py` | 建模脚本骨架（模式 A） |
 | `templates/edit_model_template.py` | 修改已有模型模板（模式 B：`EDITS` 字典 + `--blend`） |
 | `references/` | 提示词解析、配方库、bpy 速查、建筑/人物/动物/植物领域技巧、渲染自检、报错知识库、导出与引擎接入 |
+| `docs/previews/` | 建筑/人物/动物/植物建模效果预览图（实测终渲拼合，README 展示用） |
 | `tests/` | 回归测试：CI 用 unittest（无需 Blender）+ 手动 Blender 冒烟/审计回归 |
 | `examples/` | 两个完整实测样例（few-shot 参考，含可打开的 `.blend` / `.glb`） |
 | `CHANGELOG.md` | 版本改动记录 |

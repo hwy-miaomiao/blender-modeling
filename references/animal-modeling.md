@@ -4,6 +4,8 @@
 > 前置：`AGENTS.md`（阶段/闸门/看图清单唯一权威）、`references/modeling-recipes.md` §0（通用骨架、六条硬规则、材质速查）。本文只讲动物特有的部分。
 > 代码块约定同 `modeling-recipes.md` §0.3：接在通用骨架建模段（`build()` 内），最终对象名 `main`；颜色是 0-1 **线性** Base Color，单位米；尺寸/配色/报错来自本机 Blender 4.0.2 实测（§10）或标注的常识值。
 
+> 效果预览：![动物建模示例（低模猫 / 展翅海鸥）](../docs/previews/animal.png)
+
 ## 1. 适用范围与风格分级
 
 ### 1.1 什么时候用这篇
