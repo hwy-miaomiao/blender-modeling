@@ -22,6 +22,15 @@
 └── report.json           # 场景统计 + 渲染统计 + 导出记录
 ```
 
+## 效果预览
+
+下面两张预览图由技能自身流程从一句提示词生成，对应 `examples/` 里的两个完整样例（含可复现的 `model.py`，
+以及可直接打开的 `.blend` / `.glb`）：
+
+| 低多边形马克杯 `examples/lowpoly-mug` | 办公椅 `examples/office-chair` |
+| --- | --- |
+| ![lowpoly-mug](examples/lowpoly-mug/renders/view-iso.png) | ![office-chair](examples/office-chair/renders/view-iso.png) |
+
 ## 安装（三选一）
 
 **方式 A：项目级（推荐，本仓库已注册）**
