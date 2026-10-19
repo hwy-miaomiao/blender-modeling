@@ -103,11 +103,11 @@ python scripts\check_output.py --out "<输出目录>"
 | `scripts/doctor.py` | 环境体检（`--smoke` 跑端到端冒烟渲染） |
 | `scripts/check_output.py` | 交付闸门（文件/魔数/渲染非全黑/report 统计） |
 | `scripts/contact_sheet.py` | 渲染图拼联系表（可选，需要 Pillow） |
-| `scripts/ci_check.py` | 仓库静态检查（frontmatter / 示例产物 / 文档引用 / 绝对路径；无需 Blender） |
+| `scripts/ci_check.py` | 仓库静态检查（frontmatter / 示例产物 / 领域文档结构 / 文档引用 / 绝对路径；无需 Blender） |
 | `lib/blender_kit.py` | 在 Blender 进程内 import 的辅助库（图元/材质/灯光相机/渲染/导出） |
 | `templates/model_template.py` | 建模脚本骨架（模式 A） |
 | `templates/edit_model_template.py` | 修改已有模型模板（模式 B：`EDITS` 字典 + `--blend`） |
-| `references/` | 提示词解析、配方库、bpy 速查、渲染自检、报错知识库、导出与引擎接入 |
+| `references/` | 提示词解析、配方库、bpy 速查、建筑/人物/动物/植物领域技巧、渲染自检、报错知识库、导出与引擎接入 |
 | `tests/` | 回归测试：CI 用 unittest（无需 Blender）+ 手动 Blender 冒烟/审计回归 |
 | `examples/` | 两个完整实测样例（few-shot 参考，含可打开的 `.blend` / `.glb`） |
 | `CHANGELOG.md` | 版本改动记录 |

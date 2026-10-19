@@ -158,6 +158,8 @@ New-Item -ItemType Directory -Force -Path $OUT, "$OUT\renders", "$OUT\exports", 
 | 细节层 | 提升辨识度的小件（螺丝、按键、边缘倒角、装饰条） | 0-8 个 | build+render 通过后 |
 | 场景层 | 地台、道具、可选的简单背景（通常只留地台） | 0-3 个 | 最后 |
 
+**领域题材**：建筑、人物、动物、植物四类有专门的领域技巧文档（`references/architecture-modeling.md`、`references/character-modeling.md`、`references/animal-modeling.md`、`references/plant-modeling.md`）。这类提示词先读对应文档的结构拆解模板与比例尺寸表，再按 5.1 四层法填 5.2 部件表；文档里的技巧库与配方骨架可直接复用。
+
 ### 5.2 部件表（追加进 brief.md）
 
 固定 9 列，一行一个部件：
@@ -462,6 +464,10 @@ WARN 可以带过，但要在交付说明里写明原因。
 | `AGENTS.md`（本文件） | 动手前必读；流程、命令、验收标准的唯一权威 |
 | `references/prompt-to-model.md` | 阶段 1-2：提示词量化、brief 模板、四层拆解、尺寸默认值、3 个完整示例 |
 | `references/modeling-recipes.md` | 阶段 2-3：常见题材的部件拆解与代码骨架（先查有没有现成配方） |
+| `references/architecture-modeling.md` | 阶段 2-3：建筑题材——墙体/楼板/屋顶/门窗阵列/台阶/栏杆的模块化拆解、真实尺寸表、技巧库与配方 |
+| `references/character-modeling.md` | 阶段 2-3：人物题材——头身比量算、球棍/箱式/锥台路径、五官与发型参数、静态摆姿与实测记录 |
+| `references/animal-modeling.md` | 阶段 2-3：动物题材——四足/鸟/鱼/昆虫体块拆解、剪影优先、翼面可见性、物种尺寸表与实测记录 |
+| `references/plant-modeling.md` | 阶段 2-3：植物题材——递归分枝、树冠几何簇、叶卡片/花瓣环、季节配色与实测记录 |
 | `references/bpy-cookbook.md` | 阶段 3-4：bpy 4.0 实测 API、修改器、导出、4.0 与旧版差异 |
 | `references/render-and-check.md` | 阶段 5-6：相机/灯光/渲染参数推荐、构图、看图清单细节、迭代策略 |
 | `references/troubleshooting.md` | 任何阶段报错时查：症状/原因/解决/验证 |

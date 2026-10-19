@@ -11,8 +11,9 @@
 4. examples 的 model.py：通过 BLENDER_KIT_DIR 导入 kit、无盘符绝对路径、可编译
 5. 交付 GLB 只含几何体：不得出现摄影棚地台（Floor/FloorMat）、布尔 cutter、.001 重名
 6. CI workflow 必须包含语法检查、自测、仓库检查、单元测试四类步骤
-7. 文档引用审计：规范/README/参考文档里提到的 references/*.md、lib|scripts|templates/*.py 必须真实存在
-8. 仓库约定文件：LICENSE、.gitignore、.gitattributes、CI workflow 存在
+7. 领域技巧文档（建筑/人物/动物/植物）：10 节结构齐全、python 块可编译、无盘符绝对路径
+8. 文档引用审计：规范/README/参考文档里提到的 references/*.md、lib|scripts|templates/*.py 必须真实存在
+9. 仓库约定文件：LICENSE、.gitignore、.gitattributes、CI workflow 存在
 
 用法：
     python scripts/ci_check.py [--root <仓库根目录>]
@@ -52,6 +53,10 @@ REQUIRED_FILES = [
     "references/modeling-recipes.md",
     "references/bpy-cookbook.md",
     "references/export-and-integration.md",
+    "references/architecture-modeling.md",
+    "references/character-modeling.md",
+    "references/animal-modeling.md",
+    "references/plant-modeling.md",
     "templates/edit_model_template.py",
     "CHANGELOG.md",
     "tests/README.md",
@@ -88,7 +93,34 @@ DOC_FILES = [
     "references/modeling-recipes.md",
     "references/bpy-cookbook.md",
     "references/export-and-integration.md",
+    "references/architecture-modeling.md",
+    "references/character-modeling.md",
+    "references/animal-modeling.md",
+    "references/plant-modeling.md",
 ]
+
+# 四篇领域技巧文档：固定 10 节结构 + python 块可编译 + 无盘符绝对路径
+DOMAIN_DOCS = [
+    "references/architecture-modeling.md",
+    "references/character-modeling.md",
+    "references/animal-modeling.md",
+    "references/plant-modeling.md",
+]
+DOMAIN_SECTIONS = [
+    ("适用范围", re.compile(r"适用范围")),
+    ("结构拆解", re.compile(r"结构拆解")),
+    ("比例与尺寸", re.compile(r"比例.{0,4}(?:与|和)?\s*尺寸|尺寸.{0,4}参考")),
+    ("技巧库", re.compile(r"技巧库|技巧集合|核心技巧")),
+    ("配方骨架", re.compile(r"配方")),
+    ("材质与配色", re.compile(r"材质.{0,4}配色|材质与颜色|配色")),
+    ("灯光与相机", re.compile(r"灯光|相机|构图")),
+    ("常见错误", re.compile(r"常见(?:错误|问题|坑)")),
+    ("验收自检", re.compile(r"验收|自检|检查清单")),
+    ("实测记录", re.compile(r"实测记录|实测数据")),
+]
+DOMAIN_MIN_LINES = 250
+DOMAIN_MIN_BLOCKS = 6
+PY_BLOCK_RE = re.compile(r"```python[ \t]*\n(.*?)```", re.S)
 
 REF_MD_RE = re.compile(r"(?<![\w/.\\-])(references/[A-Za-z0-9_.-]+\.md)")
 REF_PY_RE = re.compile(r"(?<![\w/.\\-])((?:lib|scripts|templates)/[A-Za-z0-9_.-]+\.py)")
@@ -466,7 +498,38 @@ class Checker:
         else:
             self.ok(f"{rel} 含语法/自测/仓库检查/单元测试步骤")
 
-    # ---- 6. 文档引用 ----
+    # ---- 6. 领域技巧文档 ----
+    def check_domain_docs(self) -> None:
+        for rel in DOMAIN_DOCS:
+            if not self.exists(rel):
+                self.error(f"缺少领域技巧文档：{rel}")
+                continue
+            text = self.read_text(rel)
+            problems = []
+            lines = text.count("\n") + 1
+            if lines < DOMAIN_MIN_LINES:
+                problems.append(f"行数偏少（{lines} < {DOMAIN_MIN_LINES}）")
+            missing = [name for name, pattern in DOMAIN_SECTIONS if not pattern.search(text)]
+            if missing:
+                problems.append("缺章节：" + ", ".join(missing))
+            blocks = PY_BLOCK_RE.findall(text)
+            if len(blocks) < DOMAIN_MIN_BLOCKS:
+                problems.append(f"python 代码块过少（{len(blocks)} < {DOMAIN_MIN_BLOCKS}）")
+            for index, block in enumerate(blocks, 1):
+                try:
+                    compile(block, f"{rel}#block{index}", "exec")
+                except SyntaxError as exc:
+                    problems.append(f"python 块 #{index} 语法错误：{exc.msg}（第 {exc.lineno} 行）")
+            abs_hits = ABS_PATH_RE.findall(text)
+            if abs_hits:
+                problems.append(f"出现盘符绝对路径（{len(abs_hits)} 处），应使用 BLENDER_KIT_DIR 等环境变量")
+            if problems:
+                for problem in problems:
+                    self.error(f"{rel}：{problem}")
+            else:
+                self.ok(f"{rel} 结构完整（{lines} 行 / {len(blocks)} 个 python 块 / 10 节齐全）")
+
+    # ---- 7. 文档引用 ----
     def check_doc_references(self) -> None:
         missing = set()
         checked = 0
@@ -497,6 +560,7 @@ class Checker:
         self.check_examples()
         self.check_python_syntax()
         self.check_ci_workflow()
+        self.check_domain_docs()
         self.check_doc_references()
         print(f"=== 结果: {self.passes} PASS / {self.errors} ERROR / {self.warns} WARN ===")
         if self.errors:

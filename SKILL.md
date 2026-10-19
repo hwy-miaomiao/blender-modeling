@@ -43,6 +43,7 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 | `AGENTS.md` | **动手前必读**：完整流程、每阶段命令与验收条件 |
 | `references/prompt-to-model.md` | 阶段 1-2：提示词怎么翻译成建模简报与部件表 |
 | `references/modeling-recipes.md` | 阶段 3：常见题材的部件拆解与代码骨架 |
+| `references/architecture-modeling.md` 等 4 篇 | 阶段 2-3：建筑 / 人物 / 动物 / 植物题材专用——结构拆解、真实比例尺寸表、技巧库、配方与实测记录（`architecture-modeling.md`、`character-modeling.md`、`animal-modeling.md`、`plant-modeling.md`） |
 | `references/bpy-cookbook.md` | 阶段 3-4：bpy 4.0 实测 API 与坑 |
 | `references/render-and-check.md` | 阶段 5-6：相机灯光参数与看图自检清单 |
 | `references/troubleshooting.md` | 报错时查：症状 / 原因 / 解决 |
