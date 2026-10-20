@@ -11,12 +11,13 @@
 - 注入环境变量 BLENDER_KIT_DIR / BLENDER_SKILL_DIR / BLENDER_OUT_DIR / BLENDER_STAGE
 - stdout+stderr 合并写入 <out>/logs/<label>-<时间戳>.log
 - 结束时打印一行机器可读结果：`BM_RESULT {...}`
-- 退出码：成功 0，失败 1
+- 退出码：成功 0，运行失败 1，参数非法（如 --timeout <= 0）2
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 
@@ -46,6 +47,11 @@ def main(argv=None):
     parser.add_argument("extra", nargs=argparse.REMAINDER,
                         help="`--` 之后的参数会透传给建模脚本（sys.argv）")
     args = parser.parse_args(argv)
+
+    # 非正数/nan 超时会让 Blender 立刻被杀并把非法参数伪装成「运行超时」（审计 repro2 复现），
+    # 在参数层直接拒绝，退出码 2，与 TIMEOUT 错误区分开。
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout 必须是大于 0 的秒数（默认 600）")
 
     extra = list(args.extra or [])
     if extra and extra[0] == "--":

@@ -88,7 +88,10 @@ def apply_edits():
             continue
         if "material" in ops:
             m_name, color, roughness = ops["material"]
-            assign(ob, mat(m_name, color=color, roughness=roughness))
+            # update_existing：源文件里已有同名材质时也按本次参数重配（默认同名复用不改参数）；
+            # all_slots：多材质槽对象整件换材质（默认只换槽 0，其余槽会留旧材质）。
+            assign(ob, mat(m_name, color=color, roughness=roughness, update_existing=True),
+                   all_slots=True)
         if "rotate" in ops:
             rotate(ob, *ops["rotate"])
         if "scale" in ops:
@@ -106,11 +109,19 @@ def apply_edits():
 def main():
     blend_path = parse_args()
     if not blend_path:
-        raise SystemExit("缺少 --blend <path>：请给出要修改的 .blend 文件路径")
+        print("Error: 缺少 --blend <path>：请给出要修改的 .blend 文件路径")
+        sys.exit(1)
     if not os.path.isfile(blend_path):
-        raise SystemExit("找不到 .blend 文件：%s" % blend_path)
+        print("Error: 找不到 .blend 文件：%s" % blend_path)
+        sys.exit(1)
 
     info = open_blend(blend_path)
+    if not info:
+        # AGENTS 10.5：源文件损坏时 open_blend 返回 {} 并打印警告，这里必须明确报错退出，
+        # 不能继续用空 info 取 object_count（否则 KeyError 崩溃，错误信息不可读）。
+        print("Error: 无法打开 .blend：%s（文件损坏或格式不支持，详见上方 WARN；请重新提供 Blender 4.x .blend）"
+              % blend_path)
+        sys.exit(1)
     print("[edit] 已打开 %s（%d 对象 / %d 网格 / %d 相机 / %d 灯光）"
           % (blend_path, info["object_count"], info["mesh_count"],
              info["camera_count"], info["light_count"]))

@@ -68,7 +68,7 @@
       "path": "renders/view-front.png",
       "width": 512,
       "height": 512,
-      "bytes": 272203,
+      "bytes": 272401,
       "mean": 127.1335,
       "std": 50.2182,
       "black_ratio": 0.0,
@@ -90,7 +90,7 @@
       "path": "renders/view-right.png",
       "width": 512,
       "height": 512,
-      "bytes": 271334,
+      "bytes": 271367,
       "mean": 117.5145,
       "std": 49.8053,
       "black_ratio": 0.0,
@@ -105,7 +105,7 @@
     },
     "glb": {
       "path": "exports/model.glb",
-      "bytes": 79084
+      "bytes": 78072
     }
   },
   "extra": {

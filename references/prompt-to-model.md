@@ -48,7 +48,7 @@
 | 金属感 | `metallic=0.8-1.0`，粗糙度 0.2-0.45；同时必须有环境/灯光否则发黑 |
 | 磨砂 / 塑料 | 粗糙度 0.6-0.9，金属度 0 |
 | 透明 | `mat(..., alpha=0.3-0.6)`；仅 EEVEE/正确混合设置下稳定，低多边形默认不用 |
-| 大 / 巨大 | 目标高度 ×1.5-2；同时把 `setup_scene(distance=...)` 与灯光能量按比例放大（布光半径 = distance×0.8，距离翻倍能量约 ×4），否则主体受光偏弱；三视角取景由 `render_views` 自动完成，不靠 distance |
+| 大 / 巨大 | 目标高度 ×1.5-2；把 `setup_scene(distance=...)` 按比例放大（布光半径 = max(distance×0.8, 1.0)，三视角取景由 `render_views` 自动完成，不靠 distance）。注意 `setup_scene` 的灯光能量固定 500/150/300，不随 distance 缩放；需要更强补光时改用 `setup_scene(studio=False)` 后手动 `setup_studio_lights(center=..., radius=distance*0.8, key_energy=...)`（能量与距离² 成正比，距离翻倍约 ×4） |
 | 迷你 / 小 | 目标高度 ×0.3-0.5；相机距离同步缩小，注意景深 |
 
 **原则**：一个形容词最多映射到 2 个参数组；映射越多越难验收。写进 brief 时必须带数字。
@@ -102,6 +102,13 @@
 2. 用户未指定用途 → 按摆件建模，不加液面/茶包。
 3. 用户未指定尺寸 → 按常见陶瓷马克杯 0.09 m 高。
 
+## 环境
+| 项 | 值 |
+| --- | --- |
+| Blender / Python | Blender 4.0.2 headless bpy；Python 3.12（kit 要求 3.9+） |
+| kit | `lib/blender_kit.py` 1.1.0（`scripts/doctor.py` 0 ERROR） |
+| WARN | 0 WARN（`doctor.py` 的每条 WARN 原样记在这里） |
+
 ## 验收标准
 - [ ] 三视角渲染图主体完整、比例与尺寸表误差 ≤ 10%
 - [ ] 杯柄与杯身贴合，无悬空/穿模
@@ -112,7 +119,7 @@
 | --- | --- | --- | --- |
 ```
 
-**brief 自检**：10 个小节齐全；尺寸表每个数字都带 `m`；假设至少 1 条；部件表 9 列；验收标准可判定（有数字或可看图判定）。
+**brief 自检**：11 个小节齐全（含 `## 环境`）；尺寸表每个数字都带 `m`；假设至少 1 条；部件表 9 列；验收标准可判定（有数字或可看图判定）。
 
 ## 4. 四层结构拆解
 
@@ -244,8 +251,12 @@ def build():
     leaf = mat("tree_leaf", color=(0.16, 0.38, 0.20), roughness=0.85)
 
     body = cube("cabin_body", size=(2.4, 2.0, 1.8), location=(0, 0, 0.9), material=wood)
-    roof = cylinder("cabin_roof", radius=1.6, depth=2.6, vertices=3,
-                    location=(0, 0, 1.8 + 0.45), rotation=(0, 90, 0), material=roof_mat)
+    # 三棱柱坡屋顶：正三角截面 + 压坡。radius = 屋体半深 / cos30° = 1.1547；
+    # rotation=(90,0,90) 让截面立在 YZ 平面、屋脊沿 X；再沿 Y 压到半深 1.0（0.462 = 需要的坡度系数）。
+    # 注意：本段用到 scale_obj，文件头 from blender_kit import ... 要把它加上（模板默认没导入）。
+    roof = cylinder("cabin_roof", radius=1.1547, depth=2.6, vertices=3,
+                    location=(0, 0, 1.8 + 0.2667), rotation=(90, 0, 90), material=roof_mat)
+    scale_obj(roof, (1.0, 0.462, 1.0))
     chimney = cube("cabin_chimney", size=(0.3, 0.3, 0.8), location=(0.7, -0.4, 2.5), material=wood)
     door = cube("cabin_door", size=(0.55, 0.06, 1.0), location=(0, -1.0, 0.5), material=roof_mat)
     window = cube("cabin_window", size=(0.5, 0.06, 0.5), location=(-0.6, -1.0, 1.25), material=warm)
@@ -253,8 +264,8 @@ def build():
                      location=(-3.2, 1.0, 1.1), material=wood)
     crown1 = cone("tree_crown_low", radius1=1.1, radius2=0.0, depth=1.8, vertices=10,
                   location=(-3.2, 1.0, 2.6), material=leaf)
-    crown2 = cone("tree_crown_high", radius1=0.75, radius2=0.0, depth=1.4, vertices=10,
-                  location=(-3.2, 1.0, 3.7), material=leaf)
+    crown2 = cone("tree_crown_high", radius1=0.75, radius2=0.0, depth=2.0, vertices=10,
+                  location=(-3.2, 1.0, 4.0), material=leaf)
     cabin = join([body, roof, chimney, door, window], "cabin")
     set_origin(cabin, "BOTTOM")
     tree = join([trunk, crown1, crown2], "tree")
@@ -262,7 +273,7 @@ def build():
     return cabin
 ```
 
-**常见坑**：坡屋顶别用两个斜立方体硬拼（接缝会漏光）——用三棱柱最稳；`cylinder(vertices=3)` 旋转 `rotation=(0,90,0)` 后三角截面朝上还是朝下取决于起始角，先 `--stage build` + 预览图确认，必要时把 `rotation` 改成 `(0,90,120)` 或对 `scale_obj` 翻转；门窗薄立方体要稍微嵌入墙面 0.01 m，避免共面闪烁。
+**常见坑**：坡屋顶别用两个斜立方体硬拼（接缝会漏光）——用三棱柱最稳；`cylinder(vertices=3)` 的三角截面默认尖朝 +Y 且是等边三角形，直接 `rotation=(0,90,0)` 会把截面放平（实测屋顶横穿屋体、总高 3.64 而非 2.6）；正确做法是 `rotation=(90,0,90)` 让截面立在 YZ 平面、屋脊沿 X，再 `scale_obj` 沿 Y 压坡（上例 0.462），`location.z = 檐口 + 三角高/3`。不要用 `rotation=(0,90,120)`——那只是绕世界 Z 转 120°，截面朝向不变（实测仍错）；门窗薄立方体要稍微嵌入墙面 0.01 m，避免共面闪烁。
 
 ## 6. brief → 部件表 → 代码 的映射检查
 
@@ -272,7 +283,7 @@ def build():
 | --- | --- | --- |
 | 部件表完整 | 每个部件是否都有图元/尺寸/位置/材质 | 回第 4 节补拆 |
 | 尺寸可加和 | 主体尺寸 + 附件外扩 ≈ brief 总尺寸（误差 ≤ 10%） | 调整尺寸表 |
-| 每个部件可落地 | 表里的函数名在第 4 节 kit API 中存在 | 改用等价图元或 bmesh 裸写 |
+| 每个部件可落地 | 表里的函数名在 `AGENTS.md` 第 6 节 / `references/bpy-cookbook.md` 的 kit API 中存在 | 改用等价图元或 bmesh 裸写 |
 
 写代码后反向核一遍：`grep` 每个部件名，确认 `model.py` 里出现次数 ≥ 1；`PARAMS` 里出现所有尺寸数字，函数体内无魔法数字。
 

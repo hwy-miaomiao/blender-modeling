@@ -6,9 +6,14 @@
     python -m unittest discover -s tests -v
 """
 
+import contextlib
+import io
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(SKILL_DIR, "scripts")
@@ -63,6 +68,23 @@ class ClassifyLogTests(unittest.TestCase):
         self.assertTrue(any("ModuleNotFoundError" in e for e in errors), errors)
 
 
+class SafeLabelTests(unittest.TestCase):
+    """--label 会被拼进日志文件名，必须挡住 Windows 保留名（含带扩展名写法）。"""
+
+    def test_reserved_names_get_prefix(self):
+        for name in ("CON", "con", "NUL", "COM1", "CON.txt", "NUL.log", "COM1.dat"):
+            with self.subTest(label=name):
+                cleaned = bl_common._safe_label(name)
+                self.assertTrue(cleaned.lower().startswith("run_"), (name, cleaned))
+
+    def test_normal_label_is_cleaned_not_prefixed(self):
+        self.assertEqual(bl_common._safe_label("view front"), "view_front")
+        self.assertEqual(bl_common._safe_label("final"), "final")
+
+    def test_empty_label_falls_back(self):
+        self.assertEqual(bl_common._safe_label(""), "run")
+
+
 class FindBlenderTests(unittest.TestCase):
     def test_result_is_none_or_existing_file(self):
         exe = bl_common.find_blender()
@@ -72,6 +94,34 @@ class FindBlenderTests(unittest.TestCase):
 
     def test_explicit_missing_path_returns_none(self):
         self.assertIsNone(bl_common.find_blender("Z:\\definitely\\not\\blender.exe"))
+
+
+class ExecuteWarningsTests(unittest.TestCase):
+    """execute() 里执行前记录的警告不能被最终 result.update 覆盖丢掉。"""
+
+    def test_label_clean_warning_is_preserved(self):
+        fake = subprocess.CompletedProcess(args=[], returncode=0,
+                                           stdout=b"Blender 4.0.2\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = os.path.join(tmp, "model.py")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write("print('noop')\n")
+            out_dir = os.path.join(tmp, "out")
+            with mock.patch.object(
+                    bl_common, "blender_version",
+                    return_value={"ok": True, "version": "4.0.2", "tuple": (4, 0, 2)}
+            ), mock.patch.object(bl_common.subprocess, "run", return_value=fake):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = bl_common.execute(
+                        script, out_dir, stage="build", timeout=5,
+                        label="bad label/../x", blender=sys.executable, quiet=True)
+            self.assertTrue(result["ok"], result["errors"])
+            self.assertTrue(any("label" in w for w in result["warnings"]),
+                            result["warnings"])
+            log_name = os.path.basename(result["log"])
+            self.assertNotIn(" ", log_name)
+            self.assertNotIn("/", log_name)
+            self.assertNotIn("\\", log_name)
 
 
 if __name__ == "__main__":

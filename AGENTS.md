@@ -111,7 +111,7 @@ python scripts/doctor.py
 python scripts/doctor.py --smoke
 ```
 
-**怎么读**：逐项 `[PASS]` / `[FAIL]` / `[WARN]`，最后一行汇总如 `=== 结果: 6 PASS / 0 ERROR / 1 WARN ===`；存在 ERROR 时退出码 1。
+**怎么读**：逐项 `[PASS]` / `[FAIL]` / `[WARN]`，再读汇总行如 `=== 结果: 6 PASS / 0 ERROR / 1 WARN ===`（汇总行之后还会打印一行「下一步」提示；有 ERROR 时末尾是逐条 `ERROR:` 明细）；存在 ERROR 时退出码 1。
 
 **验收条件**
 
@@ -333,7 +333,7 @@ python scripts/run_blender.py --script "$OUT\model.py" --out "$OUT" --stage full
 - `BM_RESULT` `ok:true`、`errors:[]`；`renders` 至少包含 `view-*` 三张；`final-*.png` 建议 960×960（或按用户要求），全部 > 15 KB。
 - `exports` 至少包含 `exports/model.blend` 与 `exports/model.glb`，两个文件非空；`<输出目录>/report.json` 存在且合法 JSON，`dimensions` 三轴为正、有相机与灯光。
 - 打开 `final-iso.png` 再看一遍，与预览一致、无新问题。
-- **交付 GLB 只含几何体**：kit 1.1.0 起 `export_glb/export_stl/export_fbx/export_obj` 默认排除 `kit_role="floor"` 的摄影棚地台与布尔 cutter（`.blend` 仍保留完整场景方便重渲）；真要带地台时显式传 `include_floor=True`。交付前确认 glb 里没有 `Floor` / `FloorMat` / `.001` 重名（`check_output.py` 与 `ci_check.py` 都会查）。
+- **交付 GLB 只含几何体**：kit 1.1.0 起 `export_glb/export_stl/export_fbx/export_obj` 默认排除 `kit_role="floor"` 的摄影棚地台与布尔 cutter（`.blend` 仍保留完整场景方便重渲）；真要带地台时显式传 `include_floor=True`。交付前确认 glb 里没有 `Floor` / `FloorMat` / 布尔 cutter / `.001` 重名：仓库 `examples/` 的 glb 由 `ci_check.py` 的交付资产检查把关；`check_output.py` 只查导出文件是否存在/魔数/体积（不解析 glb 内部对象名），自己输出目录的 glb 需用 Blender 导入确认。
 
 ## 10.5 模式 B：修改已有模型
 
@@ -380,7 +380,7 @@ python scripts/check_output.py --out "$OUT" --min-views 4
 | 渲染图过小或 `std <= 4.0` / `black_ratio >= 0.98` | 空图/全黑/纯色图 | 检查灯光/相机/world，按第 14 节重渲 |
 | `report.renders 为空` | 脚本没保存渲染统计 | `full` 分支调用 `save_report(OUT_DIR)` |
 | `report 缺少 blend/glb 记录` | 导出没执行或路径不对 | 调 `export_all(EXPORTS_DIR, stem="model")` |
-| `model.py 未含 BLENDER_KIT_DIR` | 脚本被写死/丢头部 | 恢复模板头部环境变量段 |
+| `model.py 未导入 blender_kit` | 脚本被写死/丢头部 | 恢复模板头部环境变量段 |
 | 导出文件过小或缺失 | 导出失败/空场景 | 看该次 `logs/*.log` 末尾错误 |
 | `report 的导出路径/渲染路径必须是相对路径` | report 被写成绝对路径（旧版 kit 行为） | 重跑 `--stage full`（kit 1.1.0+ 自动写相对路径）或手工改相对路径 |
 | 渲染图尺寸过小 | `renders/` 里有 <64px 的占位图/假图 | 删掉占位图，重跑 `--stage render` |
@@ -445,7 +445,7 @@ WARN 可以带过，但要在交付说明里写明原因。
 | --- | --- |
 | kit 缺少某功能（如自定义曲面） | 用 `bpy`/`bmesh` 裸写（`bm = bmesh.new(); bm.from_mesh(obj.data); ...; bm.to_mesh(obj.data); bm.free()`），仍写回 `model.py` |
 | 布尔失败/结果异常 | 改用简单图元叠加或 `add_bevel` 造倒角，不追求复杂挖孔；布尔 cutter 必须是实体，单面 `plane` 当 cutter 无效（实测） |
-| 文字/中文字形缺失 | 加载系统字体：`bpy.data.fonts.load(r"C:\Windows\Fonts\simhei.ttf")` 后赋给文字对象再 `convert(target="MESH")`（实测 1866 顶点） |
+| 文字/中文字形缺失 | 加载系统字体：`bpy.data.fonts.load(os.path.join(os.environ["WINDIR"], "Fonts", "simhei.ttf"))` 后赋给文字对象再 `convert(target="MESH")`（实测 1866 顶点；不要写字面盘符，否则违反 6.2 的绝对路径验收） |
 | 渲染太慢/超时 | 降分辨率（512→384）、降采样（16→8）、关 denoise、减部件数；先 `--stage build` 验证建模，再单独 `--stage render` |
 | 全黑/纯色图 | 查灯光能量>0、world 强度>0、相机不在物体内部（kit 的 `render_still`/`render_views` 会自动补相机，裸 `bpy.ops.render.render` 才会报 `Cannot render, no camera`） |
 | 导出失败 | 只用 `export_all(EXPORTS_DIR, stem="model")`；单独导出时用 `save_blend`/`export_glb`（OBJ 走 `export_obj`，不要用已移除的 `bpy.ops.export_scene.obj`） |

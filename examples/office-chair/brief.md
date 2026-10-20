@@ -92,6 +92,12 @@
 6. **只有 3 张 512 预览图**：示例仓库要控制体积，`--stage full` 不在 `examples/` 里产 960 终渲；真实交付按模板加 `final-*`。
 7. **样例保留二进制导出**：`--stage full` 生成 `exports/model.blend`（约 0.56 MB）与 `model.glb`（约 0.08 MB），随样例一起提交，可直接用 Blender 打开 / 导入引擎；`logs/` 不提交，重跑 `--stage full` 即重新生成。
 
+## 环境
+
+- Blender 4.0.2（headless `blender -b`，Cycles）、Python 3.12；kit 1.0.0（本样例产物生成时版本；当前仓库 kit 1.1.0，重跑 `--stage full` 会更新 `report.json` 里的版本号）。
+- `python -X utf8 -B scripts/doctor.py` → 0 ERROR；平台 Windows x64。
+- 渲染只依赖 Blender 自带 Cycles；`contact_sheet.py` 才需要可选 Pillow。
+
 ## 验收标准
 
 - [x] `--stage build` 退出码 0、`errors: []`，objects=10 / meshes=5 / tris=1100 / dims≈(0.625, 0.638, 0.952)

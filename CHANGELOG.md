@@ -21,7 +21,7 @@
 ### 新增
 
 - `lib/blender_kit.py` 新增 `open_blend(path)`：打开已有 `.blend` 继续编辑/重渲/重导出，配合新模板支持「改模型」请求。
-- `templates/edit_model_template.py`：修改已有模型的工作流模板（对象增删、位移/旋转/缩放、换材质、隐藏，再重新渲染导出）。
+- `templates/edit_model_template.py`：修改已有模型的工作流模板（位移/旋转/缩放、换材质、隐藏已有对象，再重新渲染导出）。
 - `references/export-and-integration.md`：导出格式选择、单位与坐标系、Three.js / Unity / Unreal / Godot 接入、3D 打印清单、材质边界。
 - `tests/`：`test_cli_contract.py`、`test_bl_common.py`、`test_contact_sheet.py`（标准库 unittest，CI 每次跑）、`kit_smoke.blender.py` 与 `kit_regression.blender.py`（需要 Blender 的手工回归）。
 - `scripts/ci_check.py` 新增：交付 GLB 资产检查（不得含摄影棚地台 / 布尔 cutter / `.001` 重名）、CI workflow 步骤检查、更多必需文件。

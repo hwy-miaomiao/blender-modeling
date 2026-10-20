@@ -146,6 +146,9 @@ ABS_PATH_RE = re.compile(r"(?<![\w/])[A-Za-z]:[\\/]")
 # 交付资产（.glb）里绝不该出现的名字：摄影棚地台、布尔 cutter、Blender 自动重名后缀
 FORBIDDEN_GLB_MATERIALS = ("FloorMat",)
 FORBIDDEN_GLB_NAME_PREFIXES = ("Floor",)
+# 布尔 cutter 由 kit.add_boolean 命名（如 mug_cutter / Cutter.001），按子串识别；
+# 只有前缀匹配查不到「xxx_cutter」这种名字，docstring 承诺的检查会漏检。
+FORBIDDEN_GLB_NAME_SUBSTRINGS = ("cutter",)
 BAD_SUFFIX = ".001"
 
 
@@ -349,9 +352,10 @@ class Checker:
                 materials.append(str(item["name"]))
         bad = 0
         for name in names + materials:
+            lowered = name.lower()
             if name in FORBIDDEN_GLB_MATERIALS or name.endswith(BAD_SUFFIX) or any(
                 name.startswith(prefix) for prefix in FORBIDDEN_GLB_NAME_PREFIXES
-            ):
+            ) or any(token in lowered for token in FORBIDDEN_GLB_NAME_SUBSTRINGS):
                 bad += 1
                 self.error(
                     f"{rel} 含不该交付的对象/材质 {name!r}"

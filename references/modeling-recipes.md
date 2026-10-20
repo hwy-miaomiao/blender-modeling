@@ -56,7 +56,7 @@ if STAGE in ("render", "full"):
     render_views(os.path.join(OUT, "renders"))
 
 # ---------- 5. 导出（写 OUT/exports/，report.json 落在 OUT） ----------
-if STAGE in ("build", "full"):
+if STAGE == "full":
     export_all(os.path.join(OUT, "exports"), stem="model")
 ```
 
@@ -100,7 +100,7 @@ if STAGE in ("build", "full"):
 | 2.7 | 床 | `bed` | 宽 1.70 × 长 2.10 × 高 0.92 | ★★ | 多薄层堆叠（床架/床垫/被子） |
 | 2.8 | 台灯 | `table-lamp` | 高 0.42、灯罩直径 0.32 | ★★ | 圆锥布尔挖罩 + 发光球 |
 | 2.9 | 小木屋 | `cabin` | 4.0 × 3.5 × 高 4.2 | ★★★ | 布尔开门窗、四棱锥屋顶、局部缩放 |
-| 2.10 | 树 | `tree` | 高约 4.8、冠幅 2.4 | ★★ | 圆锥树干 + 多个低段球树冠 |
+| 2.10 | 树 | `tree` | 高约 4.8、单冠球直径约 2.4（四球错位后整体冠幅约 3.4） | ★★ | 圆锥树干 + 多个低段球树冠 |
 | 2.11 | 石头 | `rock-cluster` | 主石 0.8 × 0.5 | ★ | 低段球 + 置换 + flat 着色 |
 | 2.12 | 花（盆栽） | `potted-flower` | 高 0.47、盆径 0.16 | ★★ | 圆锥盆 + 圆柱茎 + 球瓣环 |
 | 2.13 | 汽车 | `car` | 长 4.4 × 宽 1.8 × 高 1.4 | ★★★★ | 大倒角车身 + 胶囊形车舱 + 圆柱轮 |
@@ -360,7 +360,7 @@ cabin = join([found, walls, roof, chimney, step, door] + panes, "cabin"); set_or
 
 ### 2.10 树 `tree` ★★
 
-**尺寸** 高约 4.8、树冠最大直径约 2.4、树干直径 0.4~0.5
+**尺寸** 高约 4.8、单冠球直径约 2.4、树干直径 0.4~0.5；四个冠球错位后整体 bbox 实测约 3.4×2.45×4.83（写 brief 时按整体冠幅 3.4 报，别再写 2.4）
 **部件** ① 树干（圆锥，下粗上细） ② 四个错落的低段球树冠（主体 + 3 个偏置球）
 **图元/修改器** `cone` + `sphere` ×4；`shade_flat` 出低模面块感（想圆润可 `shade_smooth`）
 **分段** 树干 8~10 段，树冠球 8 段 × 6 环（这是低多边形树的关键）
@@ -388,7 +388,7 @@ tree = join([trunk] + crowns, "tree"); set_origin(tree, "BOTTOM")
 **部件** ① 主石 ② 两块偏置小石（一处一石，形成自然组合）
 **图元/修改器** `sphere(segments=8, rings=5)` + `scale_obj` 压扁 + `add_displace` 噪波 + `shade_flat`
 **分段** 球 8×5 起步，越低越像low-poly；不要超过 12×8
-**收尾要点** 每块石头缩放比例不同才自然；用 `set_origin(BOTTOM)` 让石头贴地；置换强度 ≤ 半径的 1/6
+**收尾要点** 每块石头缩放比例不同才自然；join 后用 `sit_on_floor(rock)` 让石头贴地（`set_origin(BOTTOM)` 只移原点、不改几何，实测底部会悬空 3.6 cm）；置换强度 ≤ 半径的 1/6
 **朝向** 自然物，朝向无要求
 **难度** ★（约 5 分钟）
 
@@ -401,7 +401,7 @@ for i, (x, y, s) in enumerate([(0.00, 0.00, 1.00), (0.60, 0.20, 0.55), (-0.45, 0
     add_displace(r, strength=0.05 * s, noise_scale=0.30 * s); apply_modifiers(r)
     shade_flat(r)
     rocks.append(r)
-rock = join(rocks, "rock_cluster"); set_origin(rock, "BOTTOM")
+rock = join(rocks, "rock_cluster"); sit_on_floor(rock)
 ```
 
 > 变体：半径都 ×30、置换强度 ×30 → 山体；半径 ×0.1、加几块小碎石 → 路边碎石；材质加一点金色、metallic=0.6 → 矿石。
@@ -608,7 +608,7 @@ add_bevel(blade, 0.006, segments=1); apply_modifiers(blade)
 tip = cone("blade_tip", radius1=0.044, radius2=0.0, depth=0.14, vertices=4, location=(0, 0, 1.00), material=steel)
 scale_obj(tip, (1.0, 0.30, 1.0))                        # 压扁成刃尖
 guard = cube("guard", size=(0.26, 0.055, 0.035), location=(0, 0, 0.24), material=gold)
-grip = cylinder("grip", radius=0.019, depth=0.17, vertices=12, location=(0, 0, 0.12), material=leather)
+grip = cylinder("grip", radius=0.019, depth=0.20, vertices=12, location=(0, 0, 0.135), material=leather)  # 顶 0.235 与 guard 底 0.2225 重叠，避免手柄悬空
 pommel = sphere("pommel", radius=0.034, segments=12, rings=8, location=(0, 0, 0.034), material=gold)
 sword = join([blade, tip, guard, grip, pommel], "sword"); set_origin(sword, "BOTTOM")
 ```

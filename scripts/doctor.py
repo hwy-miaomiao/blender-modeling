@@ -4,6 +4,7 @@
 用法：
     python scripts/doctor.py            # 只检查
     python scripts/doctor.py --smoke    # 额外跑一次 64x64 冒烟渲染（约 1-3 秒）
+    python scripts/doctor.py --json     # 以纯 JSON 输出（便于脚本/CI 解析）
 
 检查项（FAIL 会使退出码为 1）：
 1. 当前 Python 版本 >= 3.9
@@ -17,6 +18,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
 import os
 import shutil
 import sys
@@ -28,11 +32,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bl_common  # noqa: E402
 
 RESULTS = []
+# --json 模式下逐条结果只收集不打印，保证 stdout 是纯 JSON（否则 jq / 脚本无法解析）
+QUIET = False
 
 
 def record(level, message):
     RESULTS.append((level, message))
-    print("[%s] %s" % (level, message))
+    if not QUIET:
+        print("[%s] %s" % (level, message))
 
 
 def check_python():
@@ -46,6 +53,9 @@ def check_layout():
     required = [
         ("lib/blender_kit.py", os.path.join(bl_common.KIT_DIR, "blender_kit.py")),
         ("templates/model_template.py", os.path.join(bl_common.TEMPLATE_DIR, "model_template.py")),
+        # 模式 B（AGENTS 10.5）必须用编辑模板；缺了它文档流程直接不可用
+        ("templates/edit_model_template.py",
+         os.path.join(bl_common.TEMPLATE_DIR, "edit_model_template.py")),
         ("scripts/run_blender.py", os.path.join(bl_common.SKILL_DIR, "scripts", "run_blender.py")),
         ("scripts/check_output.py", os.path.join(bl_common.SKILL_DIR, "scripts", "check_output.py")),
     ]
@@ -139,31 +149,44 @@ def check_smoke(exe):
     script = os.path.join(tmp, "smoke.py")
     out_dir = os.path.join(tmp, "out")
     os.makedirs(out_dir, exist_ok=True)
+    keep_dir = False
     try:
         with open(script, "w", encoding="utf-8") as fh:
             fh.write(SMOKE_SCRIPT)
-        result = bl_common.execute(script, out_dir, stage="full", timeout=180,
-                                   label="smoke", blender=exe, quiet=True)
+        if QUIET:
+            # --json 时 execute(quiet=True) 仍会打印一行 BM_RESULT，这里整体吞掉
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = bl_common.execute(script, out_dir, stage="full", timeout=180,
+                                           label="smoke", blender=exe, quiet=True)
+        else:
+            result = bl_common.execute(script, out_dir, stage="full", timeout=180,
+                                       label="smoke", blender=exe, quiet=True)
         if not result.get("ok"):
             record("FAIL", "smoke 渲染失败：%s" % ("; ".join(result.get("errors") or [])[:400]))
+            keep_dir = True
             print("       冒烟目录保留用于排查: %s" % tmp)
             return
         renders = result.get("renders") or []
         exports = result.get("exports") or []
         if not renders:
             record("FAIL", "smoke 未产出渲染图")
+            keep_dir = True
         elif not exports:
             record("FAIL", "smoke 未导出 glb/blend")
+            keep_dir = True
         else:
             names = [item["path"] for item in exports]
             need = [n for n in ("smoke.glb", "smoke.blend") if not any(n in x for x in names)]
             if need:
                 record("FAIL", "smoke 缺少导出: %s" % ", ".join(need))
+                keep_dir = True
             else:
                 record("PASS", "smoke 端到端通过：渲染 1 张 + 导出 glb/blend（%.1fs）"
                        % (result.get("duration_s") or 0))
+        if keep_dir:
+            print("       冒烟目录保留用于排查: %s" % tmp)
     finally:
-        if os.path.isdir(tmp):
+        if not keep_dir and os.path.isdir(tmp):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -173,9 +196,12 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     args = parser.parse_args(argv)
 
-    print("=== blender-modeling doctor ===")
-    print("技能目录: %s" % bl_common.SKILL_DIR)
-    print("工作目录: %s\n" % os.getcwd())
+    global QUIET
+    QUIET = bool(args.json)
+    if not args.json:
+        print("=== blender-modeling doctor ===")
+        print("技能目录: %s" % bl_common.SKILL_DIR)
+        print("工作目录: %s\n" % os.getcwd())
 
     check_python()
     check_layout()
@@ -188,6 +214,18 @@ def main(argv=None):
     fails = [m for level, m in RESULTS if level == "FAIL"]
     warns = [m for level, m in RESULTS if level == "WARN"]
     passes = [m for level, m in RESULTS if level == "PASS"]
+
+    if args.json:
+        payload = {
+            "ok": not fails,
+            "skill_dir": bl_common.SKILL_DIR,
+            "cwd": os.getcwd(),
+            "smoke": bool(args.smoke),
+            "counts": {"pass": len(passes), "error": len(fails), "warn": len(warns)},
+            "items": [{"level": level, "message": message} for level, message in RESULTS],
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 1 if fails else 0
 
     print("\n=== 结果: %d PASS / %d ERROR / %d WARN ===" % (len(passes), len(fails), len(warns)))
     if fails:

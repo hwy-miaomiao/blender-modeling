@@ -262,7 +262,7 @@ txt_mesh = bpy.context.object
 print(len(txt_mesh.data.vertices))      # 实测 3152（"中文 Abc", size=0.5, extrude=0.02）
 ```
 
-- 同一字符串用默认字体会得到完全不同的顶点数（实测 209），因为中文字形缺失，**面积/轮廓不可用**。
+- 同一字符串用默认字体会得到完全不同的顶点数（实测 836，口径同上：size=1、extrude=0.05），因为中文字形缺失，**面积/轮廓不可用**。
 - `convert` 后对象类型从 `FONT` 变 `MESH`，才方便 `join`、布尔、`mesh_stats`；导出前不转换也能导，但得到的是文字对象。
 - 字体文件用绝对路径加载一次即可（`check_existing=True` 复用）；脚本里不要把系统中文字体路径写死成唯一方案，带存在性检查再回退（见第 13 节）。
 
@@ -491,7 +491,7 @@ m.object = cutter
 **布尔实测要点**：
 
 - cutter **必须是封闭实体**。实测：立方体用圆柱 cutter（DIFFERENCE）→ 求值网格 72 顶点，挖洞正常。
-- 用单面 `plane` 当 cutter 结果**不可预测**（同一立方体、只改平面高度）：平面穿过立方体中部/上部（z=0.50 / 0.75）→ 求值网格仍是原立方体 **8 顶点 6 面**，切割静默不生效；平面悬空在立方体上方（z=1.20）→ 目标被整体清空 **0 顶点**；平面正好贴在顶面（z=1.00）→ 只剩 **4 顶点 1 个面**。需要"切"的效果时，给平面加 Solidify 变成薄实体，或改用实体图元。
+- 用单面 `plane` 当 cutter 结果**不可预测**（`plane` 默认 `size=2 m`；改成 1 m 时下面的结果会变，切割可能生效）：同一立方体、只改平面高度，平面穿过立方体中部/上部（z=0.50 / 0.75）→ 求值网格仍是原立方体 **8 顶点 6 面**，切割静默不生效；平面悬空在立方体上方（z=1.20）→ 目标被整体清空 **0 顶点**；平面正好贴在顶面（z=1.00）→ 只剩 **4 顶点 1 个面**。需要"切"的效果时，给平面加 Solidify 变成薄实体，或改用实体图元。
 - 布尔结果法线可能翻转/出现内壁；低多边形优先做"简单图元叠加"而不是复杂挖孔（见 AGENTS.md 降级路径）。
 - 布尔应用后 cutter 应立即删除：`bpy.data.objects.remove(cutter, do_unlink=True)`。
 
@@ -666,7 +666,7 @@ def frame_camera(cam, objects, margin=1.2):
 from bpy_extras.object_utils import world_to_camera_view
 bpy.context.view_layer.update()          # 不刷新会拿到 (0.5, 0.5, 0.0) 这种假值（实测）
 ndc = world_to_camera_view(bpy.context.scene, cam, Vector((0.0, 0.0, 0.5)))
-print(ndc)      # 实测刷新后 (0.5, 0.589, 6.399)
+print(ndc)      # 实测刷新后 (0.5, 0.5, 6.1847)（§8.1 相机 (4,-4,3)、lens=50、target (0,0,0.5)、512²）
 # 判据：x/y ∈ [0.05, 0.95]（留边），z > 0（在相机前方）
 in_frame = 0.05 <= ndc.x <= 0.95 and 0.05 <= ndc.y <= 0.95 and ndc.z > 0
 ```

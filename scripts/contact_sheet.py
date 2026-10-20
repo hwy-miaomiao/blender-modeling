@@ -32,10 +32,31 @@ except ImportError:  # 可选依赖
     Image = None
     ImageDraw = None
 
-PREFERRED_ORDER = ("front", "right", "left", "back", "iso", "top", "final")
+PREFERRED_ORDER = ("front", "right", "left", "back", "iso", "top")
+# 交付要求的 view-* 必须排在同角度的 final-* 前面：默认 --max 4 时不能挤掉必要的 iso 视角。
+TIER_VIEW = 0
+TIER_FINAL = 1
+TIER_OTHER = 2
 MARGIN = 10
 BG = (28, 28, 32)
 FG = (235, 235, 235)
+
+
+def _angle_rank(name):
+    lower = name.lower()
+    for index, key in enumerate(PREFERRED_ORDER):
+        if key in lower:
+            return index
+    return len(PREFERRED_ORDER)
+
+
+def _tier_rank(name):
+    lower = name.lower()
+    if lower.startswith("view-"):
+        return TIER_VIEW
+    if lower.startswith("final-"):
+        return TIER_FINAL
+    return TIER_OTHER
 
 
 def collect_images(renders_dir):
@@ -45,15 +66,9 @@ def collect_images(renders_dir):
         name for name in sorted(os.listdir(renders_dir))
         if name.lower().endswith(".png") and name != "contact-sheet.png"
     ]
-
-    def rank(name):
-        lower = name.lower()
-        for index, key in enumerate(PREFERRED_ORDER):
-            if key in lower:
-                return index
-        return len(PREFERRED_ORDER)
-
-    return [os.path.join(renders_dir, name) for name in sorted(names, key=rank)]
+    # 先按 view-/final- 分层，再按角度优先级，最后按文件名保证结果稳定
+    return [os.path.join(renders_dir, name) for name in
+            sorted(names, key=lambda item: (_tier_rank(item), _angle_rank(item), item))]
 
 
 def build_sheet(out_dir, cols=2, tile_height=480, max_images=4):
@@ -108,6 +123,13 @@ def main(argv=None):
     parser.add_argument("--height", type=int, default=480, help="每格高度像素（默认 480）")
     parser.add_argument("--max", type=int, default=4, help="最多拼入几张（默认 4）")
     args = parser.parse_args(argv)
+    # 参数在动 Pillow 之前先校验：--height 0/负数会让 resize 抛未捕获的 ValueError
+    if args.cols < 1:
+        parser.error("--cols 必须 >= 1")
+    if args.height < 1:
+        parser.error("--height 必须 >= 1")
+    if args.max < 1:
+        parser.error("--max 必须 >= 1")
 
     if Image is None:
         print("WARN: 未安装 Pillow，无法生成联系表（pip install pillow 后重试）")

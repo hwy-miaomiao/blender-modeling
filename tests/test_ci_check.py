@@ -92,8 +92,57 @@ class GlbAssetChecks(unittest.TestCase):
             if n in ci_check.FORBIDDEN_GLB_MATERIALS
             or n.endswith(ci_check.BAD_SUFFIX)
             or any(n.startswith(p) for p in ci_check.FORBIDDEN_GLB_NAME_PREFIXES)
+            or any(t in n.lower() for t in ci_check.FORBIDDEN_GLB_NAME_SUBSTRINGS)
         ]
         self.assertEqual(bad, ["Floor", "Mug.001", "FloorMat"])
+
+
+def _glb_bytes(doc):
+    """构造只含 JSON chunk 的最小合法 GLB（供 _check_glb_asset 解析）。"""
+    import struct
+    body = json.dumps(doc).encode("utf-8")
+    while len(body) % 4:
+        body += b" "
+    return (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(body))
+            + struct.pack("<I", len(body)) + b"JSON" + body)
+
+
+class GlbAssetEndToEnd(unittest.TestCase):
+    """docstring/CHANGELOG 承诺检查布尔 cutter；修复前 cutter 名字不报错（r7 审计 m3）。"""
+
+    def _check(self, doc):
+        with tempfile.TemporaryDirectory() as tmp:
+            exports = os.path.join(tmp, "examples", "lowpoly-mug", "exports")
+            os.makedirs(exports)
+            with open(os.path.join(exports, "model.glb"), "wb") as fh:
+                fh.write(_glb_bytes(doc))
+            checker = ci_check.Checker(tmp)
+            checker._check_glb_asset("examples/lowpoly-mug/exports/model.glb")
+            return checker
+
+    def test_cutter_node_rejected(self):
+        checker = self._check({
+            "nodes": [{"name": "cutter_main"}],
+            "meshes": [{"name": "mug"}],
+            "materials": [{"name": "mug_white"}],
+        })
+        self.assertGreaterEqual(checker.errors, 1)
+
+    def test_cutter_material_rejected(self):
+        checker = self._check({
+            "nodes": [{"name": "mug"}],
+            "meshes": [{"name": "mug"}],
+            "materials": [{"name": "Boolean_Cutter_Mat"}],
+        })
+        self.assertGreaterEqual(checker.errors, 1)
+
+    def test_clean_asset_passes(self):
+        checker = self._check({
+            "nodes": [{"name": "mug"}],
+            "meshes": [{"name": "mug_body"}],
+            "materials": [{"name": "mug_ceramic"}],
+        })
+        self.assertEqual(checker.errors, 0)
 
 
 if __name__ == "__main__":

@@ -279,7 +279,7 @@ def build_house():
     base = cube("house_base", size=(P["w"] + 0.4, P["d"] + 0.4, P["plinth"]), location=(0, 0, P["plinth"] / 2), material=m_stone)
     for i in range(3):                               # 3 级台阶：进深递减、后沿贴台基
         depth = 0.30 * (3 - i)
-        cube("house_step_%d" % i, size=(1.8, depth, 0.15), location=(0, half_d + 0.4 + depth / 2, 0.15 * (i + 1) - 0.075), material=m_stone)
+        cube("house_step_%d" % i, size=(1.8, depth, 0.15), location=(0, half_d + 0.2 + depth / 2, 0.15 * (i + 1) - 0.075), material=m_stone)
     zc_g = P["plinth"] + 0.95 + 0.70                 # 一层窗中心（窗台 0.95、窗高 1.4）
     walls = []
     for s in (-1, 1):                                # 前后墙：门洞 + 2 窗洞；侧墙不开洞（低模）
@@ -341,15 +341,23 @@ def build_bridge_deck():
 
 ### 5.4 围墙与庭院大门 ★★
 
-院墙 12×14、高 2.2、厚 0.30；门楼宽 5.2、高 3.0；铺装内缩 0.4；树 3 棵；空地留 50%。院墙/门柱/铺装见 §4.10，门楼屋顶沿用 §4.5 双坡（跨度 5.6、坡度 30°、出挑 0.5）：
+院墙 12×14、高 2.2、厚 0.30；门楼宽 5.2、高 3.0；铺装内缩 0.4；树 3 棵；空地留 50%。院墙/门柱/铺装见 §4.10，门楼屋顶沿用 §4.5 双坡（门楼半宽 2.6 + 每边出挑 0.5 → 檐口半跨 3.1，坡度 30°）：
 
 ```python
+import math
+
 def build_gate_roof():
     m_roof = mat("gate_roof", color=(0.10, 0.11, 0.115), roughness=0.80)
+    edge, pitch = 3.1, 30.0                              # 檐口半跨 = 2.6 + 出挑 0.5
+    rise = edge * math.tan(math.radians(pitch))          # 1.7898
+    slope = edge / math.cos(math.radians(pitch))         # 坡板长 3.5796
     for s in (-1, 1):
-        cube("gate_roof_%d" % s, size=(2.0, 3.6, 0.16), location=(s * 2.4, -7.0, 3.55),
-             rotation=(0, s * 30.0, 0), material=m_roof)
-    cube("gate_ridge", size=(6.2, 0.35, 0.30), location=(0, -7.0, 4.35), rotation=(0, 45, 0), material=m_roof)
+        cube("gate_roof_%d" % s, size=(slope, 3.6, 0.16),
+             location=(s * edge / 2, -7.0, 3.0 + rise / 2),
+             rotation=(0, s * pitch, 0), material=m_roof)
+    # 屋脊：绕 X 轴转 45° 得到菱形水平脊盖；绕 Y 轴转会让它变斜插（实测 bbox z 2.05~6.65）
+    cube("gate_ridge", size=(6.2, 0.32, 0.32), location=(0, -7.0, 3.0 + rise - 0.02),
+         rotation=(45, 0, 0), material=m_roof)
 ```
 
 > 变体：牌坊 → 3 间 4 柱；小区入口 → 两柱 + 保安亭；公园围墙 → 漏窗（布尔挖圆/方洞）与栏杆段交替。

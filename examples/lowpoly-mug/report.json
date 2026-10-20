@@ -66,7 +66,7 @@
       "path": "renders/view-front.png",
       "width": 512,
       "height": 512,
-      "bytes": 255347,
+      "bytes": 255339,
       "mean": 164.3146,
       "std": 61.6762,
       "black_ratio": 0.0,
@@ -103,7 +103,7 @@
     },
     "glb": {
       "path": "exports/model.glb",
-      "bytes": 126328
+      "bytes": 125320
     }
   },
   "extra": {

@@ -19,7 +19,7 @@ kit 的导出都在 §4.6，全部**自动补后缀、自动建父目录**，返
 | `export_obj(path, include_floor=False)` | `.obj` + `.mtl` | 带修改器、材质/法线/UV | 老管线；`.mtl` 要跟 `.obj` 一起拷 |
 | `export_all(out_dir, stem="model")` | `.blend` + `.glb` + `report.json` | 交付必需组合 | `report.json` 落在 `out_dir` 的**上一级**（即 `report_dir = dirname(exports)`） |
 
-为什么默认排除地台：`setup_scene(floor=True)` / `setup_floor()` 会建一块 20 m 的摄影棚地台，仅为渲染取景和接地影服务。它是**场景道具，不是模型本体**，混进 `.glb` 会让下游看到一片巨大平面。确实需要连地台一起交付时传 `include_floor=True`。
+为什么默认排除地台：`setup_scene(floor=True)` / `setup_floor()` 会建一块摄影棚地台（边长为 `max(20, distance×5)` 米，`setup_scene` 的 `distance` > 4 时随之放大），仅为渲染取景和接地影服务。它是**场景道具，不是模型本体**，混进 `.glb` 会让下游看到一片巨大平面。确实需要连地台一起交付时传 `include_floor=True`。
 
 ```python
 # 典型：只要模型（默认）

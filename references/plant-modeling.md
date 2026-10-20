@@ -66,7 +66,7 @@
 | 11 | 针叶树 | 高 10-20，冠幅 3-6，层间距 1-2 | 常识 |
 | 12 | 草丛 / 藤蔓 | 叶高 0.05-0.2 / 攀爬高 2-5，缠绕半径 0.05-0.15 | 常识 |
 | 13 | 实测：阔叶树 | 高 3.99，冠幅 2.32×2.26，干底径 0.48 | 实测 |
-| 14 | 实测：花坛 | 0.820×0.444×0.695，花株高 0.26-0.36 | 实测 |
+| 14 | 实测：花坛 | 0.820×0.420×0.696（2532 tris），花株高 0.26-0.36 | 实测 |
 
 低模植物尺寸可比真实值夸张 20%-50%（叶、花、树干加粗），否则远看会「消失」。
 
@@ -254,15 +254,15 @@ def build():
 ```
 关键比例：树干 1.9 m、冠心 2.54 m、冠幅约 2.3 m；分枝 2-3 级就够，枝梢必须被冠罩住。变体：`scale` 1.3 → 5 m 树；`lobes` 半径 ×0.6、枝长 ×0.5 → 灌木。
 
-### 5.2 针叶树 ★★（分层锥体，约 900 tris）
+### 5.2 针叶树 ★★（分层锥体，约 120 tris）
 ```python
 from blender_kit import cone, join, mat, set_origin, setup_scene, shade_flat
 def build():
     setup_scene(target=(0, 0, 2.4), distance=8.0, lens=50, elevation=18)
     bark = mat("conifer_bark", color=(0.12, 0.08, 0.05), roughness=0.92)
     needle = mat("conifer_needle", color=(0.03, 0.12, 0.05), roughness=0.85)
-    objs = [cone("conifer_trunk", radius1=0.16, radius2=0.10, depth=4.2,
-                 vertices=8, location=(0, 0, 2.1), material=bark)]
+    objs = [cone("conifer_trunk", radius1=0.16, radius2=0.10, depth=4.0,
+                 vertices=8, location=(0, 0, 2.0), material=bark)]
     for i in range(5):
         layer = cone("conifer_layer_%d" % i, radius1=1.30 * 0.70 ** i, radius2=0.0,
                      depth=1.30 * 0.84 ** i, vertices=10, material=needle,
@@ -301,10 +301,10 @@ def build():
 ```
 3-6 团成丛、同丛球重叠 50%；复制 2-3 份错位摆放即成灌木带。
 
-### 5.4 花坛 / 盆栽 ★★（本文实测：3558 tris / 0.82×0.44×0.70 m）
+### 5.4 花坛 / 盆栽 ★★（本文实测：2532 tris / 0.82×0.42×0.70 m）
 ```python
 import math
-from blender_kit import (add_bevel, cone, cube, join, mat, place, rotate, scale_obj,
+from blender_kit import (add_bevel, apply_modifiers, cone, cube, join, mat, place, rotate, scale_obj,
                          set_origin, setup_floor, setup_scene, sphere, translate)
 def build():
     setup_scene(target=(0, 0, 0.42), distance=4.0, lens=50, elevation=26, floor=False)
@@ -312,6 +312,7 @@ def build():
     pot = cube("planter", size=(0.82, 0.42, 0.30), location=(0, 0, 0.15),
                material=mat("planter_wood", color=(0.09, 0.045, 0.022), roughness=0.88))
     add_bevel(pot, width=0.010, segments=2)
+    pot = apply_modifiers(pot)                  # join 前落地修改器，否则倒角会作用到合并后的整块花坛
     objs = [pot, cube("soil", size=(0.73, 0.33, 0.05), location=(0, 0, 0.277),
                       material=mat("soil", color=(0.015, 0.012, 0.008), roughness=1.0))]
     stem_mat = mat("stem", color=(0.035, 0.13, 0.035), roughness=0.72)
@@ -391,7 +392,7 @@ def build():
 | 1 | `ModuleNotFoundError: No module named 'blender_kit'` | 直接用 `python model.py` 或 `blender -b --python model.py` 跑，未注入 `BLENDER_KIT_DIR` | 一律用 `python scripts\run_blender.py --script ... --out ... --stage ...` |
 | 2 | `NameError: name 'save_report' is not defined. Did you mean: 'scene_report'?` | 清理 `from blender_kit import ...` 时删掉了 `save_report`，full 阶段才用到 | 补回导入；full 前先 `--stage build` 快检 |
 | 3 | `Error: script failed, file: '<model.py>', exiting.` | Blender `--python-exit-code 1` 把异常转成退出码，真因在日志 | 查 `<out>/logs/<label>-*.log` 的**第一个** `Traceback` |
-| 4 | `[ERROR] 缺少或为空: <out>\brief.md` | 只跑 full 生成渲染/导出，没写交付必需的 brief.md | 按 10 小节模板补 `brief.md` 后重跑 `check_output.py` |
+| 4 | `[ERROR] 缺少或为空: <out>\brief.md` | 只跑 full 生成渲染/导出，没写交付必需的 brief.md | 按 AGENTS.md 4.2 的 11 小节模板补 `brief.md`（含 `## 环境`）后重跑 `check_output.py` |
 | 5 | 布尔挖盆后内腔材质串色，`material_index` 出现 `414629464` | 布尔 cutter 无材质，新面材质索引越界 | cutter 建件时传同一材质：`cylinder(..., material=ceramic)` |
 | 6 | 花头/叶片旋转后「飞出去」 | 先 `rotate` 再 `set_origin`，绕第一片花瓣转 | 先 `set_origin(CENTER)` → `rotate` → `translate` |
 | 7 | 渲染整体发白、花瓣看不出颜色 | sRGB 直觉色当线性用（如树叶给 (0.2,0.6,0.2)） | 按 §6.1 压暗 30%-50%；深色地台拉对比 |
@@ -418,7 +419,7 @@ def build():
 | 题材 | 命令 | 耗时 | objects | mesh | tris | dimensions（米） | check_output | read_image 结论 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 阔叶树 broadleaf-tree | `--stage full` | 33.7 s | 6 | 1 | 624 | 2.315 × 2.257 × 3.993 | 27 PASS / 0 ERROR | 树冠连片、枝梢不外露、投影落地 |
-| 花坛 flower-bed | `--stage full` | 203.2 s | 6 | 1 | 3558 | 0.820 × 0.444 × 0.695 | 27 PASS / 0 ERROR | 花头三视角可见、叶片贴茎、分色清楚 |
+| 花坛 flower-bed | `--stage full` | 203.2 s | 6 | 1 | 2532 | 0.820 × 0.420 × 0.696 | 27 PASS / 0 ERROR | 花头三视角可见、叶片贴茎、分色清楚 |
 
 花坛 full 明显更慢：9 株 × 6 瓣的小几何让 960×960/32 samples 的采样与降噪变慢；要压时间把 final 降到 800×800/24 samples。
 

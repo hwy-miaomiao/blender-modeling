@@ -736,9 +736,15 @@ def fit_camera(camera, objects, margin=1.2):
         except Exception:
             rx, ry = 1, 1
         aspect = float(rx) / float(ry)
-        scale = max(xmax * 2.0, ymax * 2.0 * aspect) * m
+        # ortho_scale 对应 sensor_fit 决定的长边：AUTO 时横幅=宽、竖幅=高。
+        # 竖幅画面若仍按“宽”算会让可见宽度变成 scale*aspect，横向被裁掉 1/aspect。
+        fit = str(getattr(cam_data, "sensor_fit", 'AUTO'))
+        if fit == 'HORIZONTAL' or (fit != 'VERTICAL' and aspect >= 1.0):
+            scale = max(xmax * 2.0, ymax * 2.0 * aspect)
+        else:
+            scale = max(ymax * 2.0, xmax * 2.0 / aspect)
         try:
-            cam_data.ortho_scale = max(scale, 1e-3)
+            cam_data.ortho_scale = max(scale * m, 1e-3)
         except Exception:
             pass
         camera.location = center - dirv * (radius * 2.0 + 1.0)
@@ -1570,8 +1576,8 @@ def mesh_stats(obj, evaluated=True):
 # ---------------------------------------------------------------------------
 
 def mat(name, color=(0.8, 0.8, 0.8), roughness=0.5, metallic=0.0,
-        emission=None, emission_strength=0.0, alpha=1.0):
-    """创建/获取 Principled BSDF 材质（同名直接复用已有材质，不再改参数）。
+        emission=None, emission_strength=0.0, alpha=1.0, update_existing=False):
+    """创建/获取 Principled BSDF 材质（同名默认复用已有材质，不再改参数）。
 
     参数:
         name: 材质名（缓存键）
@@ -1580,23 +1586,31 @@ def mat(name, color=(0.8, 0.8, 0.8), roughness=0.5, metallic=0.0,
         emission: 自发光颜色 0-1 RGB 或 None
         emission_strength: 自发光强度（要发光必须 >0；None/0 时不自发光）
         alpha: 不透明度 0-1（<1 时自动设置 BLEND 混合）
+        update_existing: True 时同名材质也按本次参数重新配置（编辑已有模型时用，
+            默认 False 保持「同名复用不改参数」的老行为）
     返回:
         bpy.types.Material
     """
     m = bpy.data.materials.get(str(name))
     if m is not None:
-        return m
+        if not update_existing:
+            return m
+        return _configure_material(m, color=color, roughness=roughness, metallic=metallic,
+                                   emission=emission, emission_strength=emission_strength,
+                                   alpha=alpha)
     m = bpy.data.materials.new(str(name))
     return _configure_material(m, color=color, roughness=roughness, metallic=metallic,
                                emission=emission, emission_strength=emission_strength,
                                alpha=alpha)
 
 
-def assign(obj, material):
-    """给对象赋予材质（替换第一个材质槽；没有槽时追加）。
+def assign(obj, material, all_slots=False):
+    """给对象赋予材质（默认替换第一个材质槽；没有槽时追加）。
 
     参数:
         obj: 对象；material: 材质
+        all_slots: True 时把所有材质槽都替换成同一材质（整对象换材质用；
+            默认只换第一个槽，其余槽保留原材质）
     返回:
         obj
     """
@@ -1617,6 +1631,9 @@ def assign(obj, material):
     try:
         if len(mats) == 0:
             mats.append(material)
+        elif all_slots:
+            for i in range(len(mats)):
+                mats[i] = material
         else:
             mats[0] = material
     except Exception as exc:
@@ -1985,22 +2002,142 @@ def _visible_geometry():
     return out
 
 
-def _restore_render_setup(old_setup, who="render"):
-    """渲染预览结束后恢复进入前的渲染设置（旧值为空时不动作）。"""
-    if not old_setup:
+def _snapshot_render_state():
+    """快照当前场景的真实渲染设置（render_views/render_turntable 结束后原样恢复）。
+
+    除了 setup_render 记录过的参数，还覆盖渲染过程会改动、但 setup_render 未必
+    记录过的字段（film_transparent / 输出格式 / filepath / view_settings 等），
+    避免预览渲染把调用方进入前的状态改坏。
+    """
+    sc = _scene()
+    state = {}
+
+    def _grab(key, getter):
+        try:
+            state[key] = getter()
+        except Exception:
+            pass
+
+    r = sc.render
+    vs = sc.view_settings
+    _grab("engine", lambda: str(r.engine))
+    _grab("resolution", lambda: (int(r.resolution_x), int(r.resolution_y)))
+    _grab("resolution_percentage", lambda: int(r.resolution_percentage))
+    _grab("film_transparent", lambda: bool(r.film_transparent))
+    _grab("image_format", lambda: str(r.image_settings.file_format))
+    _grab("filepath", lambda: str(r.filepath))
+    _grab("look", lambda: str(vs.look))
+    _grab("view_transform", lambda: str(vs.view_transform))
+    _grab("exposure", lambda: float(vs.exposure))
+    cy = getattr(sc, "cycles", None)
+    if cy is not None:
+        for attr in ("samples", "use_adaptive_sampling", "use_denoising", "denoiser"):
+            _grab("cycles." + attr, lambda a=attr: getattr(cy, a))
+    ee = getattr(sc, "eevee", None)
+    if ee is not None:
+        _grab("eevee.taa_render_samples", lambda: int(ee.taa_render_samples))
+    return state
+
+
+def _restore_render_state(state):
+    """按 _snapshot_render_state 的快照恢复渲染设置（逐项容错，失败不抛）。"""
+    if not state:
         return
-    try:
-        setup_render(
-            engine=old_setup.get("engine_requested") or old_setup.get("engine") or "CYCLES",
-            samples=int(old_setup.get("samples", 48) or 48),
-            resolution=tuple(old_setup.get("resolution") or (960, 960)),
-            transparent=bool(old_setup.get("transparent", False)),
-            denoise=bool(old_setup.get("denoise", True)),
-            film_exposure=float(old_setup.get("film_exposure", 1.0) or 1.0),
-            color_look=old_setup.get("color_look") or old_setup.get("look"),
-        )
-    except Exception as exc:
-        _warn("%s: 恢复渲染设置失败 %r" % (who, exc))
+    sc = _scene()
+    if "engine" in state:
+        try:
+            sc.render.engine = state["engine"]
+        except Exception:
+            pass
+    r = sc.render
+    vs = sc.view_settings
+    if "resolution" in state:
+        res = state["resolution"]
+        try:
+            r.resolution_x = int(res[0])
+        except Exception:
+            pass
+        try:
+            r.resolution_y = int(res[1])
+        except Exception:
+            pass
+    if "resolution_percentage" in state:
+        try:
+            r.resolution_percentage = int(state["resolution_percentage"])
+        except Exception:
+            pass
+    if "film_transparent" in state:
+        try:
+            r.film_transparent = bool(state["film_transparent"])
+        except Exception:
+            pass
+    if "image_format" in state:
+        try:
+            r.image_settings.file_format = str(state["image_format"])
+        except Exception:
+            pass
+    if "filepath" in state:
+        try:
+            r.filepath = str(state["filepath"])
+        except Exception:
+            pass
+    if "view_transform" in state:
+        try:
+            vs.view_transform = str(state["view_transform"])
+        except Exception:
+            pass
+    if "look" in state:
+        try:
+            vs.look = str(state["look"])
+        except Exception:
+            pass
+    if "exposure" in state:
+        try:
+            vs.exposure = float(state["exposure"])
+        except Exception:
+            pass
+    cy = getattr(sc, "cycles", None)
+    if cy is not None:
+        for attr in ("samples", "use_adaptive_sampling", "use_denoising", "denoiser"):
+            key = "cycles." + attr
+            if key in state:
+                try:
+                    setattr(cy, attr, state[key])
+                except Exception:
+                    pass
+    ee = getattr(sc, "eevee", None)
+    if ee is not None and "eevee.taa_render_samples" in state:
+        try:
+            ee.taa_render_samples = int(state["eevee.taa_render_samples"])
+        except Exception:
+            pass
+
+
+def _restore_render_setup(old_setup, who="render", state=None):
+    """渲染预览结束后恢复进入前的真实渲染设置与 _STATE 记录。
+
+    state 是进入前的真实场景设置快照（_snapshot_render_state 的返回值）；给了
+    就按它恢复（即使 _STATE["render_setup"] 为空，也就是没调过 setup_render
+    时也会恢复）。最后把 _STATE["render_setup"] 还原成进入前的旧值（空也还原，
+    避免预览的覆盖参数残留到 report.json 的 params 里）。
+    """
+    if state:
+        _restore_render_state(state)
+    elif old_setup:
+        # 兜底：没有真实快照时退回旧行为（按上次 setup_render 的入参重设）
+        try:
+            setup_render(
+                engine=old_setup.get("engine_requested") or old_setup.get("engine") or "CYCLES",
+                samples=int(old_setup.get("samples", 48) or 48),
+                resolution=tuple(old_setup.get("resolution") or (960, 960)),
+                transparent=bool(old_setup.get("transparent", False)),
+                denoise=bool(old_setup.get("denoise", True)),
+                film_exposure=float(old_setup.get("film_exposure", 1.0) or 1.0),
+                color_look=old_setup.get("color_look") or old_setup.get("look"),
+            )
+        except Exception as exc:
+            _warn("%s: 恢复渲染设置失败 %r" % (who, exc))
+    _STATE["render_setup"] = dict(old_setup or {})
 
 
 def _frame_objects():
@@ -2051,6 +2188,7 @@ def render_views(out_dir, prefix="view", views=("front", "right", "iso"), camera
     out_dir = os.path.abspath(os.fspath(out_dir))
     os.makedirs(out_dir, exist_ok=True)
     old_setup = dict(_STATE.get("render_setup") or {})
+    raw_state = _snapshot_render_state()
     _maybe_reconfigure_render(engine, samples, resolution)
     sc = _scene()
     cam = camera if camera is not None else sc.camera
@@ -2088,7 +2226,7 @@ def render_views(out_dir, prefix="view", views=("front", "right", "iso"), camera
             sc.camera = old_scene_camera
         except Exception as exc:
             _warn("render_views: 恢复相机失败 %r" % (exc,))
-        _restore_render_setup(old_setup, "render_views")
+        _restore_render_setup(old_setup, "render_views", raw_state)
     return results
 
 
@@ -2115,6 +2253,7 @@ def render_turntable(out_dir, prefix="turn", count=6, elevation=20.0, **kw):
     if kw:
         _warn("render_turntable: 忽略未知参数 %r" % (sorted(kw.keys()),))
     old_setup = dict(_STATE.get("render_setup") or {})
+    raw_state = _snapshot_render_state()
     _maybe_reconfigure_render(engine, samples, resolution)
     sc = _scene()
     if cam is None:
@@ -2128,6 +2267,7 @@ def render_turntable(out_dir, prefix="turn", count=6, elevation=20.0, **kw):
     old_loc = cam.location.copy()
     old_rot = cam.rotation_euler.copy()
     old_clip = (float(cam.data.clip_start), float(cam.data.clip_end))
+    old_ortho = float(getattr(cam.data, "ortho_scale", 0.0))
     targets = _frame_objects()
     el = math.radians(float(elevation))
     count = max(1, int(count))
@@ -2147,10 +2287,12 @@ def render_turntable(out_dir, prefix="turn", count=6, elevation=20.0, **kw):
             cam.rotation_euler = old_rot
             cam.data.clip_start = old_clip[0]
             cam.data.clip_end = old_clip[1]
+            if old_ortho > 0:
+                cam.data.ortho_scale = old_ortho
             sc.camera = old_scene_camera
         except Exception as exc:
             _warn("render_turntable: 恢复相机失败 %r" % (exc,))
-        _restore_render_setup(old_setup, "render_turntable")
+        _restore_render_setup(old_setup, "render_turntable", raw_state)
     return results
 
 
@@ -2188,14 +2330,17 @@ def _export_targets(include_floor=False):
     return objs
 
 
-def _select_for_export(include_floor=False):
+def _select_for_export(include_floor=False, targets=None):
     """选中应导出的几何对象（排除地台），返回 (目标列表, 是否用选择集导出)。
 
     场景里没有任何可导出几何对象时返回 (空列表, False)，让导出器退回全场景模式，
     避免导出空文件。
     """
     _ensure_object_mode()
-    targets = _export_targets(include_floor=include_floor)
+    if targets is None:
+        targets = _export_targets(include_floor=include_floor)
+    else:
+        targets = list(targets)
     try:
         bpy.ops.object.select_all(action='DESELECT')
     except Exception:
@@ -2211,6 +2356,53 @@ def _select_for_export(include_floor=False):
         except Exception:
             pass
     return targets, bool(targets)
+
+
+def _unhide_for_export(targets, kind="export"):
+    """导出前临时取消视口隐藏，返回需要恢复的对象列表。
+
+    hide_viewport=True 只关闭视口显示，对象**仍然参与渲染**；但导出器在
+    use_selection 模式下会静默跳过这类对象，导致交付 GLB/OBJ 与渲染图/报告
+    不一致。这里导出前临时显示它们，导出后用 _restore_viewport_hide 还原。
+    """
+    saved = []
+    for ob in (targets or []):
+        try:
+            if bool(getattr(ob, "hide_viewport", False)):
+                ob.hide_viewport = False
+                saved.append(ob)
+        except Exception:
+            continue
+    if saved:
+        try:
+            bpy.context.view_layer.update()
+        except Exception:
+            pass
+        _log("%s: 导出前临时显示 %d 个视口隐藏但参与渲染的对象（导出后恢复）: %r" %
+             (kind, len(saved), [getattr(o, "name", "?") for o in saved]))
+    blocked = [getattr(o, "name", "?") for o in (targets or [])
+               if bool(getattr(o, "hide_viewport", False))]
+    if blocked:
+        _warn("%s: 以下视口隐藏对象无法临时显示，导出会缺失: %r" % (kind, blocked))
+    return saved
+
+
+def _restore_viewport_hide(saved):
+    """还原 _unhide_for_export 临时取消的视口隐藏。"""
+    if not saved:
+        return
+    failed = []
+    for ob in saved:
+        try:
+            ob.hide_viewport = True
+        except Exception:
+            failed.append(getattr(ob, "name", "?"))
+    try:
+        bpy.context.view_layer.update()
+    except Exception:
+        pass
+    if failed:
+        _warn("导出后恢复视口隐藏失败: %r" % (failed,))
 
 
 def save_blend(path):
@@ -2241,6 +2433,8 @@ def export_glb(path, include_floor=False):
 
     只导出几何对象（自动排除 kit_role='floor' 的摄影棚地台），
     场景中没有任何几何对象时退回「导出整个场景」以免产出空文件。
+    视口隐藏（hide_viewport=True）但仍参与渲染的对象会在导出前临时取消隐藏，
+    导出后恢复，避免渲染图里有、glb 里静默丢失。
 
     参数:
         path: 输出路径（自动补 .glb 后缀）
@@ -2250,21 +2444,26 @@ def export_glb(path, include_floor=False):
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".glb")
-    _, use_sel = _select_for_export(include_floor)
-    attempts = [
-        dict(filepath=absp, export_format='GLB', use_selection=use_sel, export_apply=True,
-             export_cameras=False, export_lights=False, export_yup=True),
-        dict(filepath=absp, export_format='GLB', use_selection=use_sel),
-    ]
-    for i, kwargs in enumerate(attempts):
-        try:
-            bpy.ops.export_scene.gltf(**kwargs)
-            if os.path.exists(absp) and os.path.getsize(absp) > 0:
-                _record_export("glb", absp)
-                _log("已导出 glb: %s (%d bytes)" % (absp, os.path.getsize(absp)))
-                return absp
-        except Exception as exc:
-            _warn("export_glb 尝试 %d 失败: %r" % (i + 1, exc))
+    targets = _export_targets(include_floor=include_floor)
+    saved = _unhide_for_export(targets, "export_glb")
+    try:
+        _, use_sel = _select_for_export(include_floor, targets=targets)
+        attempts = [
+            dict(filepath=absp, export_format='GLB', use_selection=use_sel, export_apply=True,
+                 export_cameras=False, export_lights=False, export_yup=True),
+            dict(filepath=absp, export_format='GLB', use_selection=use_sel),
+        ]
+        for i, kwargs in enumerate(attempts):
+            try:
+                bpy.ops.export_scene.gltf(**kwargs)
+                if os.path.exists(absp) and os.path.getsize(absp) > 0:
+                    _record_export("glb", absp)
+                    _log("已导出 glb: %s (%d bytes)" % (absp, os.path.getsize(absp)))
+                    return absp
+            except Exception as exc:
+                _warn("export_glb 尝试 %d 失败: %r" % (i + 1, exc))
+    finally:
+        _restore_viewport_hide(saved)
     _warn("export_glb: 最终失败 %r" % (absp,))
     return ""
 
@@ -2274,6 +2473,7 @@ def export_stl(path, include_floor=False):
 
     Blender 4.0.2 里 STL 导出器是插件操作符 bpy.ops.export_mesh.stl（4.1+ 才有
     bpy.ops.wm.stl_export），这里自动尝试两种，取可用的那个。
+    视口隐藏但仍参与渲染的对象会在导出前临时取消隐藏，导出后恢复。
 
     参数:
         path: 输出路径（自动补 .stl 后缀）
@@ -2283,32 +2483,39 @@ def export_stl(path, include_floor=False):
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".stl")
-    targets, use_sel = _select_for_export(include_floor)
+    targets = _export_targets(include_floor=include_floor)
     skipped = [getattr(o, "name", "?") for o in targets if getattr(o, "type", "") != 'MESH']
     if skipped:
         _warn("export_stl: STL 只支持网格，以下对象会丢失（先转网格）: %r" % (skipped,))
-    calls = [
-        ("wm.stl_export", dict(filepath=absp, use_selection=use_sel)),
-        ("export_mesh.stl", dict(filepath=absp, use_selection=use_sel, ascii=False,
-                                 use_mesh_modifiers=True)),
-    ]
-    for op_name, kwargs in calls:
-        try:
-            mod_name, func_name = op_name.split(".")
-            op = getattr(getattr(bpy.ops, mod_name), func_name)
-            op(**kwargs)
-            if os.path.exists(absp) and os.path.getsize(absp) > 0:
-                _record_export("stl", absp)
-                _log("已导出 stl: %s (%d bytes)" % (absp, os.path.getsize(absp)))
-                return absp
-        except Exception as exc:
-            _warn("export_stl: %s 不可用/失败: %r" % (op_name, exc))
+    saved = _unhide_for_export(targets, "export_stl")
+    try:
+        _, use_sel = _select_for_export(include_floor, targets=targets)
+        calls = [
+            ("wm.stl_export", dict(filepath=absp, use_selection=use_sel)),
+            ("export_mesh.stl", dict(filepath=absp, use_selection=use_sel, ascii=False,
+                                     use_mesh_modifiers=True)),
+        ]
+        for op_name, kwargs in calls:
+            try:
+                mod_name, func_name = op_name.split(".")
+                op = getattr(getattr(bpy.ops, mod_name), func_name)
+                op(**kwargs)
+                if os.path.exists(absp) and os.path.getsize(absp) > 0:
+                    _record_export("stl", absp)
+                    _log("已导出 stl: %s (%d bytes)" % (absp, os.path.getsize(absp)))
+                    return absp
+            except Exception as exc:
+                _warn("export_stl: %s 不可用/失败: %r" % (op_name, exc))
+    finally:
+        _restore_viewport_hide(saved)
     _warn("export_stl: 最终失败 %r" % (absp,))
     return ""
 
 
 def export_fbx(path, include_floor=False):
     """导出 FBX（插件 op export_scene.fbx；默认只导出几何对象、带修改器求值）。
+
+    视口隐藏但仍参与渲染的对象会在导出前临时取消隐藏，导出后恢复。
 
     参数:
         path: 输出路径（自动补 .fbx 后缀）
@@ -2318,23 +2525,30 @@ def export_fbx(path, include_floor=False):
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".fbx")
-    _, use_sel = _select_for_export(include_floor)
-    kwargs = dict(filepath=absp, use_selection=use_sel, use_mesh_modifiers=True,
-                  path_mode='AUTO', embed_textures=False)
+    targets = _export_targets(include_floor=include_floor)
+    saved = _unhide_for_export(targets, "export_fbx")
     try:
-        bpy.ops.export_scene.fbx(**kwargs)
-        if os.path.exists(absp) and os.path.getsize(absp) > 0:
-            _record_export("fbx", absp)
-            _log("已导出 fbx: %s (%d bytes)" % (absp, os.path.getsize(absp)))
-            return absp
-    except Exception as exc:
-        _warn("export_fbx 失败: %r" % (exc,))
+        _, use_sel = _select_for_export(include_floor, targets=targets)
+        kwargs = dict(filepath=absp, use_selection=use_sel, use_mesh_modifiers=True,
+                      path_mode='AUTO', embed_textures=False)
+        try:
+            bpy.ops.export_scene.fbx(**kwargs)
+            if os.path.exists(absp) and os.path.getsize(absp) > 0:
+                _record_export("fbx", absp)
+                _log("已导出 fbx: %s (%d bytes)" % (absp, os.path.getsize(absp)))
+                return absp
+        except Exception as exc:
+            _warn("export_fbx 失败: %r" % (exc,))
+    finally:
+        _restore_viewport_hide(saved)
     _warn("export_fbx: 最终失败 %r" % (absp,))
     return ""
 
 
 def export_obj(path, include_floor=False):
     """导出 Wavefront OBJ（4.0 用 bpy.ops.wm.obj_export，不是旧的 export_scene.obj）。
+
+    视口隐藏但仍参与渲染的对象会在导出前临时取消隐藏，导出后恢复。
 
     参数:
         path: 输出路径（自动补 .obj 后缀）
@@ -2344,17 +2558,22 @@ def export_obj(path, include_floor=False):
     """
     _ensure_object_mode()
     absp = _normalize_export_path(path, ".obj")
-    _, use_sel = _select_for_export(include_floor)
-    kwargs = dict(filepath=absp, export_selected_objects=use_sel, apply_modifiers=True,
-                  export_materials=True, export_normals=True, export_uv=True)
+    targets = _export_targets(include_floor=include_floor)
+    saved = _unhide_for_export(targets, "export_obj")
     try:
-        bpy.ops.wm.obj_export(**kwargs)
-        if os.path.exists(absp) and os.path.getsize(absp) > 0:
-            _record_export("obj", absp)
-            _log("已导出 obj: %s (%d bytes)" % (absp, os.path.getsize(absp)))
-            return absp
-    except Exception as exc:
-        _warn("export_obj 失败: %r" % (exc,))
+        _, use_sel = _select_for_export(include_floor, targets=targets)
+        kwargs = dict(filepath=absp, export_selected_objects=use_sel, apply_modifiers=True,
+                      export_materials=True, export_normals=True, export_uv=True)
+        try:
+            bpy.ops.wm.obj_export(**kwargs)
+            if os.path.exists(absp) and os.path.getsize(absp) > 0:
+                _record_export("obj", absp)
+                _log("已导出 obj: %s (%d bytes)" % (absp, os.path.getsize(absp)))
+                return absp
+        except Exception as exc:
+            _warn("export_obj 失败: %r" % (exc,))
+    finally:
+        _restore_viewport_hide(saved)
     _warn("export_obj: 最终失败 %r" % (absp,))
     return ""
 

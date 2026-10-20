@@ -184,7 +184,9 @@ def _safe_label(label):
         cleaned = "run"
     if len(cleaned) > 64:
         cleaned = cleaned[:64]
-    if cleaned.upper() in _WIN_RESERVED:
+    # Windows 设备名带扩展名同样保留（CON.txt / NUL.log 仍会被系统当设备），
+    # 用第一段判断，避免只拦精确名时漏掉带扩展名的写法。
+    if cleaned.upper() in _WIN_RESERVED or cleaned.split(".")[0].upper() in _WIN_RESERVED:
         cleaned = "run_" + cleaned
     return cleaned
 
@@ -415,6 +417,8 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
         errors.insert(0, "TIMEOUT: 超过 %ss 未结束" % timeout)
     if exit_code != 0 and not timed_out and not errors:
         errors.insert(0, "Blender 退出码 %s（日志无明确错误行，检查日志尾部）" % exit_code)
+    # 保留执行前记录的警告（label 清洗、写日志失败等）；直接 result.update 会整体覆盖丢警告
+    warnings = result["warnings"] + warnings
 
     artifacts = _list_artifacts(out_dir)
     # 阶段产物闸门：render/full 必须真的有渲染图；full 还必须有导出文件。

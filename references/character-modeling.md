@@ -181,9 +181,9 @@ def head_surface_y(x, z, center_z, radius, y_scale=0.96, out=0.0):
 - **适用/做法**：卡通/Q 版正脸。眼 = 球 scale (1,0.55-0.65,1.1-1.3) 压椭圆 + 小白球高光；眉 = 压扁 cube/椭球绕 Y 转 6-10°；嘴 = `tube` 三点弧；鼻 = 小球 r 0.01-0.02；腮红 = 扁球 + 低饱和红。
 ```python
 mouth = tube("hero_mouth",
-             points=[(-0.048, y_surface(-0.048, 1.364), 1.364),
-                     (0.000, y_surface(0.000, 1.352), 1.352),
-                     (0.048, y_surface(0.048, 1.364), 1.364)],
+             points=[(-0.048, head_surface_y(-0.048, 1.364, 1.4505, 0.1695), 1.364),
+                     (0.000, head_surface_y(0.000, 1.352, 1.4505, 0.1695), 1.352),
+                     (0.048, head_surface_y(0.048, 1.364, 1.4505, 0.1695), 1.364)],
              radius=0.007, resolution=8, material=mouth_mat)
 ```
 - **参数/坑**：眼半径 = 头高 ×0.10-0.20（Q 版偏大）、眼距 = 头宽 ×0.35-0.45、嘴宽 = 头宽 ×0.15-0.25；五官 y 写死常数会随头放大飞出去/陷进去（用 §4.8 球面方程），Q 版眼别做两个黑球。
@@ -387,7 +387,7 @@ def build_pair(p, mats):
 - **长焦**：`setup_scene(..., lens=85-105)`（Q 版 85、4-5 头身 105）。35 mm 会把头拍大、脚拍长、四肢变形。
 - **低机位**：`elevation=5-10`（略仰显高），Q 版 8-12 更可爱；`target=(0,0,H*0.5-H*0.55)`。
 - **+Y 正面**：`render_views` 的 front 固定从 +Y 拍，五官必须贴 +Y；`setup_scene(azimuth=-30)` 只影响布光/地台，不影响取景。
-- **自动取景**：`render_views(margin=1.15)` 按可见 mesh bbox 取景，高瘦人物占高 85-90%、Q 版 70-80% 都属正常，别为数字反复调相机。
+- **自动取景**：`render_views` 内部固定按可见 mesh bbox 用 `fit_camera(margin=1.15)` 取景（它**不接受** `margin` 参数；要改构图比例就手动 `add_camera` + `fit_camera(camera, objects, margin=1.0~1.2)`），高瘦人物占高 85-90%、Q 版 70-80% 都属正常，别为数字反复调相机。
 - **别裁四肢**：举手/抬腿会抬高 bbox → 主体被自动缩小；看"四边留白 ≥5% 画幅、手/脚离边 ≥5%"，不达标就减小举角，或手动 `fit_camera(camera, [hero], margin=1.0-1.05)`。
 - **双人**：`distance=4-5`、target 取两人中点；身高差 1 : 0.56-0.85。
 - **地台**：`setup_scene(floor=True)` 自带；`render_views` 取景自动忽略 `kit_role=floor`，不要自建大块地台抢 bbox。

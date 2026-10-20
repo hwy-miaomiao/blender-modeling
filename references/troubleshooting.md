@@ -82,7 +82,7 @@ bpy.ops.object.mode_set(mode="EDIT")   # 实测 FINISHED
 ### T-9 中文字符渲染成空白/文字消失
 
 - **症状**：`text()` 建的文字对象里中文完全消失或只剩几段；转 mesh 后顶点数极少/为 0。
-- **原因**：【实测】默认字体 `Bfont Regular` **不含中文字形**：body="中文测试" 转 mesh 得 **0 顶点**（静默失败、不报错），而 "ABC" 得 215 顶点。
+- **原因**：【实测】默认字体 `Bfont Regular` **不含中文字形**：body="中文测试" 转 mesh 得 **0 顶点**（静默失败、不报错），而 "ABC" 得 860 顶点（口径：kit `text()` 默认 `size=1`、`extrude=0.05` 后 convert）。
 - **解决**：加载系统字体再转 mesh：
 
 ```python
@@ -93,10 +93,10 @@ txt.data.font = font
 txt.data.body = "中文测试 ABC"
 bpy.context.view_layer.objects.active = txt
 txt.select_set(True)
-bpy.ops.object.convert(target="MESH")  # 实测 FINISHED，1866 顶点
+bpy.ops.object.convert(target="MESH")  # 实测 FINISHED，7464 顶点
 ```
 
-  实测可用字体：`C:\Windows\Fonts\simhei.ttf`（1866 顶点）、`msyh.ttc`（1124 顶点）。`msyh.ttc` 是 TTC 集合，个别环境不认，优先 simhei.ttf。
+  实测可用字体（口径：kit `text()` 默认 `size=1`、`extrude=0.05`，body="中文测试 ABC" 转 mesh）：`C:\Windows\Fonts\simhei.ttf`（7464 顶点）、`msyh.ttc`（4496 顶点）。`msyh.ttc` 是 TTC 集合，个别环境不认，优先 simhei.ttf。
 - **验证**：转 mesh 后 `len(obj.data.vertices) > 0`；`report.json` 中对象类型为 MESH；渲染图中文字完整。
 
 ### T-10 文字对象导出到 glb 后类型变化
@@ -148,7 +148,7 @@ bpy.ops.export_scene.gltf(
 
 ### T-14 布尔运算无效（结果没变化且不报错）
 
-- **症状**：【实测】用 `plane`（单面）当 cutter 做 DIFFERENCE，cube 仍是 8 顶点/6 面，无报错。
+- **症状**：【实测】用 `plane`（单面，默认 `size=2 m`；改成 1 m 时 z=0.50 会切到）当 cutter 做 DIFFERENCE，cube 仍是 8 顶点/6 面，无报错。
 - **原因**：布尔要求 cutter 是**闭合实体**（有体积）；单面片没有内外，EXACT 求解器直接忽略。
 - **解决**：cutter 用 `cube`/`cylinder` 等实体，并确保与目标有真实重叠；`add_boolean(obj, cutter, operation="DIFFERENCE", solver="EXACT", apply=True)`；失败就降级用图元叠加/倒角（`AGENTS.md` 15.2）。
 - **验证**：结果 `mesh_stats(obj)` 的 verts/polys 变化符合预期；切面在预览图中可见。

@@ -89,29 +89,39 @@ git clone git@github.com:hwy-miaomiao/blender-modeling.git "$env:USERPROFILE\.ag
 
 在 Harness 里直接说「用 Blender 建一个 XXX 的模型」或输入 `/blender-modeling 低多边形马克杯`，AI 会按 `AGENTS.md` 的流程执行。
 
-也可以手动跑（先 `cd` 到本技能目录，`scripts/` 均指相对路径）：
+也可以手动跑。`cd` 到本技能目录只是为了让 `scripts\` 用相对路径；`<输出目录>` 必须写成 `<工作区>\blender-models\<slug>` 的**绝对路径**（含空格要加引号），不要用相对的 `blender-models\...`，否则产物会落进技能目录（违反 AGENTS 铁律 6）。
 
 ```powershell
+# 约定：$OUT 是工作区里的输出目录，不要指到技能目录
+$OUT = "F:\你的项目\blender-models\mug"   # 换成你的工作区
+
 # 0. 体检（有 FAIL 先修环境）
 python scripts\doctor.py --smoke
 
-# 1. 执行建模脚本（build 阶段快速暴露 bpy 错误，full 阶段渲染+导出）
-python scripts\run_blender.py --script "blender-models\mug\model.py" --out "blender-models\mug" --stage full
+# 1. 按 AGENTS.md 第 4-7 节准备：写 $OUT\brief.md，复制模板并改写建模
+New-Item -ItemType Directory -Force -Path "$OUT", "$OUT\renders", "$OUT\exports", "$OUT\logs" | Out-Null
+Copy-Item templates\model_template.py "$OUT\model.py"
 
-# 2. 交付闸门（0 ERROR 才算过）
-python scripts\check_output.py --out "blender-models\mug"
+# 2. 执行建模脚本（build 阶段快速暴露 bpy 错误，full 阶段渲染+导出）
+python scripts\run_blender.py --script "$OUT\model.py" --out "$OUT" --stage full
 
-# 3. 可选：渲染图拼联系表
-python scripts\contact_sheet.py --out "blender-models\mug"
+# 3. 交付闸门（0 ERROR 才算过）
+python scripts\check_output.py --out "$OUT"
+
+# 4. 可选：渲染图拼联系表
+python scripts\contact_sheet.py --out "$OUT"
 ```
 
 **模式 B：改已有模型**（把源 `.blend` 换成你的文件）：
 
 ```powershell
-Copy-Item templates\edit_model_template.py "<输出目录>\model.py"
-# 编辑 model.py 顶部 EDITS 字典（translate / rotate / scale / material / hide）
-python scripts\run_blender.py --script "<输出目录>\model.py" --out "<输出目录>" --stage full -- --blend "<源模型>\exports\model.blend"
-python scripts\check_output.py --out "<输出目录>"
+$OUT = "F:\你的项目\blender-models\mug-edit"   # 换成你的工作区
+# 1. 先写 $OUT\brief.md（源文件路径、要改什么/不改什么、验收标准）——交付闸门要求它存在
+# 2. 复制模板到 $OUT\model.py，编辑顶部 EDITS 字典（translate / rotate / scale / material / hide）
+Copy-Item templates\edit_model_template.py "$OUT\model.py"
+# 3. 渲染 + 导出（导出文件名由模板默认 EXPORT_STEM 决定，check_output 会按 report.json 记录定位）
+python scripts\run_blender.py --script "$OUT\model.py" --out "$OUT" --stage full -- --blend "<源模型>\exports\model.blend"
+python scripts\check_output.py --out "$OUT"
 ```
 
 ## 目录结构

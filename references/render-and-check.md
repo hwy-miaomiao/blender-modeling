@@ -83,7 +83,7 @@ fit_camera(cam, [obj], margin=1.2)  # 按包围盒自动收进画面
 
 **实测占画面比例**（`film_transparent` + alpha bbox 量 examples 真样例）：`fit_camera` 对 bbox 的 8 个角点逐个投影、取能容纳全部角点的最近距离，后排角点主导，所以主体实际占比小于 1/1.15 且**随 bbox 形状变化**——低多边形马克杯（0.154×0.145×0.099 m）实测约 **47%-49%**，办公椅（0.625×0.638×0.952 m）约 **70%-77%**。`render_views` 不接受 margin 参数，改不了这个比例；想让主体更大，只能换手动相机 + `fit_camera(margin=1.0~1.1)`。
 
-**注意**：自动取景只排除 `setup_floor` 建的地台（它带 `kit_role="floor"` 标记）。用 `plane()` 自建的地台、散落的辅助道具、隐藏对象都会被算进 bbox，导致主体在画面里变小——这是"主体偏小"最常见的原因。
+**注意**：自动取景排除 `kit_role` 为 `floor` / `cutter` 的对象（`setup_floor` 地台、布尔 cutter）以及 `hide_render=True` 的对象。用 `plane()` 自建的地台、散落的辅助道具、只设了 `hide_viewport`（而非 `hide_render`）的对象仍会被算进 bbox，导致主体在画面里变小——这是"主体偏小"最常见的原因。
 
 ### 3.3 构图量化判据（看图时量）
 
@@ -215,7 +215,7 @@ python scripts/check_output.py --out "$OUT" --min-views 4
 | 现象 | 最可能原因 | 动作 |
 | --- | --- | --- |
 | 三张图全黑 | 无灯/无 world；相机在物体内 | 用 `setup_scene` 重配；查相机位置 |
-| 主体太小 | 有离群对象/自建地台被算进取景 bbox（`render_views` 只排除 `setup_floor` 地台）；或手动相机 distance 太大 | 地台改用 `setup_floor`；移走或 `join` 离群件；手动相机用 `fit_camera(cam, objects, margin=1.2)` |
+| 主体太小 | 有离群对象/自建地台被算进取景 bbox（`render_views` 只排除 `kit_role=floor/cutter` 与 `hide_render=True` 的对象；`plane()` 自建地台、只 hide_viewport 的对象仍会算入）；或手动相机 distance 太大 | 地台改用 `setup_floor`；移走或 `join` 离群件；需要排除的对象设 `hide_render=True`；手动相机用 `fit_camera(cam, objects, margin=1.2)` |
 | 主体出画 | 手动相机未取景（三视角自动取景不会出画） | `fit_camera(cam, objects, margin=1.2)` |
 | 部件悬空 | 位置 z 按错误基准算 | 用 `set_origin(group, "BOTTOM")` 后按地面 z=0 摆 |
 | 部件穿插 | 尺寸相加没算重叠 | 留 0.01 m 嵌合余量，或上移附件 |

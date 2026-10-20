@@ -101,10 +101,60 @@ class RunBlenderCLI(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertIn("找不到", r.stdout + r.stderr)
 
+    def test_non_positive_timeout_rejected(self):
+        """--timeout 0/负数/nan 必须按参数错误拒绝（退出码 2），不能伪装成 TIMEOUT。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = os.path.join(tmp, "model.py")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write("print('noop')\n")
+            for bad in ("0", "-5", "nan"):
+                with self.subTest(timeout=bad):
+                    r = run(os.path.join(SCRIPTS, "run_blender.py"),
+                            "--script", script, "--out", tmp, "--timeout", bad)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("--timeout", r.stderr)
+                    self.assertNotIn("TIMEOUT:", r.stdout)
+
     def test_help(self):
         r = run(os.path.join(SCRIPTS, "run_blender.py"), "--help")
         self.assertEqual(r.returncode, 0)
         self.assertIn("usage", r.stdout.lower())
+
+
+class DoctorCLI(unittest.TestCase):
+    """doctor.py 的 --json 契约与目录检查。"""
+
+    def test_json_output_is_pure_json(self):
+        """--json 的 stdout 必须可解析为 JSON（修前是死标志，打的仍是人类文本）。"""
+        r = run(os.path.join(SCRIPTS, "doctor.py"), "--json")
+        payload = json.loads(r.stdout)  # 混入任何人类文本都会抛 ValueError
+        self.assertIsInstance(payload, dict)
+        self.assertIn("counts", payload)
+        self.assertIn("items", payload)
+        self.assertIsInstance(payload["ok"], bool)
+        # 环境缺 Blender 的 CI 机器也可能 ok=False，这里只断言结构，退出码与 ok 一致
+        self.assertEqual(r.returncode, 0 if payload["ok"] else 1)
+
+    def test_layout_detects_missing_edit_template(self):
+        """模式 B 必须的 templates/edit_model_template.py 缺失时 doctor 要报 FAIL。"""
+        sys.path.insert(0, SCRIPTS)
+        import bl_common
+        import doctor
+        old_template_dir = bl_common.TEMPLATE_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            template_dir = os.path.join(tmp, "templates")
+            os.makedirs(template_dir)
+            with open(os.path.join(template_dir, "model_template.py"), "w", encoding="utf-8") as fh:
+                fh.write("# placeholder\n")
+            bl_common.TEMPLATE_DIR = template_dir
+            doctor.RESULTS[:] = []
+            try:
+                doctor.check_layout()
+            finally:
+                bl_common.TEMPLATE_DIR = old_template_dir
+            fails = [msg for level, msg in doctor.RESULTS if level == "FAIL"]
+            self.assertTrue(any("edit_model_template.py" in msg for msg in fails),
+                            "缺少 edit_model_template 未被检出: %r" % (fails,))
 
 
 class OtherScriptsCLI(unittest.TestCase):
