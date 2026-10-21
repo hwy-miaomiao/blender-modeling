@@ -21,16 +21,17 @@
 | 2 | 建模简报 | `<输出目录>/brief.md` | 需求理解、量化尺寸、风格、假设、部件表、迭代记录 |
 | 3 | 多角度渲染图 | `<输出目录>/renders/view-front.png` `view-right.png` `view-iso.png`（终渲再加 `final-*.png`） | 每张 > 15 KB；std > 4.0；black_ratio < 0.98 |
 | 4 | 导出文件 | `<输出目录>/exports/model.blend` + `exports/model.glb` | 两者必需；`model.stl/.fbx/.obj` 按需加 |
-| 5 | 场景报告 | `<输出目录>/report.json` | 物体/网格/面数/尺寸/渲染统计/导出记录；`run_blender.py` 的 `logs/*.log` 是排障证据 |
+| 5 | 场景报告 | `<输出目录>/report.json` | 物体/网格/面数/尺寸/渲染统计/导出记录；`run_blender.py --stage full` 默认还会写入 `vision` 视觉指标；`run_blender.py` 的 `logs/*.log` 是排障证据 |
 
-### 0.3 六条铁律（违反任一条 = 任务失败）
+### 0.3 七条铁律（违反任一条 = 任务失败）
 
 1. **先读规范再动手**：执行阶段 0 前读完本文件；不得跳阶段。
 2. **脚本是唯一真源**：所有几何/材质/灯光/相机都写在 `model.py` 里；删掉输出目录后重跑同一条命令必须得到同样的模型。
 3. **必须真看图**：每轮渲染后用 `read_image` 打开 `renders/view-*.png` 逐张检查；禁止只看日志或 `BM_RESULT` 就宣称模型没问题。
-4. **必须过闸门**：`scripts/doctor.py` 0 ERROR、`scripts/check_output.py` 0 ERROR、第 14 节看图自检清单全 PASS，才允许向用户交付。
+4. **必须过闸门**：`scripts/doctor.py` 0 ERROR、`scripts/check_output.py` 0 ERROR（含视觉指标闸门与迭代记录校验）、第 14 节看图自检清单全 PASS，才允许向用户交付。
 5. **禁止硬编码绝对路径**：`model.py` 中出现 `<技能目录>`/`<工作区>` 字面量或写死 Blender 安装路径，一律打回。用 `os.environ["BLENDER_KIT_DIR"]` / `BLENDER_OUT_DIR`。
 6. **禁止把产物写进 `<技能目录>`**：`<技能目录>` 只读；产物只写到 `<工作区>/blender-models/<slug>/`。
+7. **SAFE_MODE 边界**：`model.py` 不得使用 `subprocess` / `os.system` / `eval` / `exec` / 网络库 / `__import__` / `shutil.copyfile|copy|copytree`；写文件只允许 `renders/` `exports/` 等白名单目录或单段 `report.json` / `brief.md`，不得用绝对路径、盘符相对路径（如 `C:evil.txt`）、`..` 或无法静态确定的变量路径（含 `Path.open` / `write_text`，SAFE003/004/006 均为 ERROR）；交付前 `python scripts/safe_check.py` 必须 0 ERROR（仓库 `ci_check.py` 也会审 `templates/` 与 `examples/*/model.py`）。
 
 ## 1. 路径约定
 
@@ -53,7 +54,9 @@
 ├── renders/                 # view-front.png / view-right.png / view-iso.png / final-*.png
 ├── exports/                 # model.blend + model.glb（必需）；model.stl/fbx/obj 按需
 ├── logs/                    # run_blender.py 写出的 <label>-<时间戳>.log
-└── report.json              # kit 生成的场景 + 渲染 + 导出统计
+├── history/                 # （可选）snapshot.py 的迭代快照 v1/v2/...
+├── best.json                # （可选）snapshot.py 维护的最佳版本基线
+└── report.json              # kit 生成的场景 + 渲染 + vision 视觉统计 + 导出记录
 ```
 
 ### 1.3 路径写法铁律
@@ -312,11 +315,15 @@ read_image <输出目录>\renders\view-iso.png
 1. 每轮必须先有"上一轮图片证据"才能改；禁止无证据大改。
 2. **每轮只改 1-2 类问题**，按优先级：整体比例/布局 → 部件完整性 → 颜色材质 → 细节（倒角/平滑/分段）→ 灯光/构图 → 导出一致性。
 3. 每次修改必须落到 `model.py` 的 `PARAMS` 或对应函数；手改 `.blend` 无效。
-4. 每轮结束重跑 `--stage render` + `read_image`，并在 brief.md 迭代记录表登记：
+4. 每轮结束重跑 `--stage render` + `read_image`，并在 brief.md 迭代记录表登记。**每轮必须写清「看了哪几张图」与「关键量化值」**（主体占比/留白/亮度等看 `report.json.vision`，或跑 `python scripts/vision_metrics.py --out "$OUT" --write` 重算）：
 
-| 轮次 | 问题（证据） | 改了什么（PARAMS/函数） | 重跑结果 |
-| --- | --- | --- | --- |
-| 1 | view-iso 中杯柄悬空 3cm | `PARAMS["handle"]["offset_x"] 0.06→0.048` | 已贴合 |
+| 轮次 | 看了哪张图（read_image 证据） | 问题（证据） | 改了什么（PARAMS/函数） | 重跑结果（量化值） |
+| --- | --- | --- | --- | --- |
+| 1 | renders/view-iso.png | view-iso 中杯柄悬空 3cm | `PARAMS["handle"]["offset_x"] 0.06→0.048` | 已贴合；主体 18.6%、四边留白 ≥22%、mean 177 std 23 |
+
+   `check_output.py` 的 `check_iteration_records` 会校验：记录里显式写出的 `renders/xxx.png` 必须真实存在；若 `report.json` 含 `vision` 字段且不是 backfill 补写，还会检查每轮是否写了图名、提到的视角在 `renders/` 里是否有对应图、是否写了数字，且迭代表不能是空的（新产物至少 1 轮数据行，否则 ERROR）。每轮迭代通过闸门后可用 `python scripts/snapshot.py --out "$OUT"` 打快照（`--list` 看版本、`--rollback` 回退最佳版本；rollback 只还原 `model.py` / `renders/` / `report.json`，不还原 `exports/`，回滚后重跑 `--stage full` 重新导出）。
+
+   **存量项目迁移（backfill）**：旧项目没有 `report.json.vision` 时只做宽松校验。想启用新量化校验，先跑 `python scripts/vision_metrics.py --out "$OUT" --write` 手工补写；补写的 vision 会带 `backfill: true` 与 `backfilled_at` 标记，此时 `check_output` 只校验迭代记录里的图片引用，不强制新 5 列表格。下一次 `--stage full` 会自动重算并去掉 backfill 标记，严格校验随即生效；不要手改 `report.json.vision` 里的数值。
 
 5. 第 4 轮后仍不达标：停止迭代，交付当前最佳结果，并在交付说明里写清遗留问题与下一步改法。**不允许为了"更完美"无限循环。**
 
@@ -369,14 +376,27 @@ python scripts/run_blender.py --script "$OUT\model.py" --out "$OUT" --stage full
 python scripts/check_output.py --out "$OUT"
 # 可选：提高渲染图数量要求（默认 3）
 python scripts/check_output.py --out "$OUT" --min-views 4
+# 可选：跳过视觉指标（未装 Pillow / 只需查文件时）
+python scripts/check_output.py --out "$OUT" --no-vision
 ```
 
 **判读**：逐项 `[PASS]` / `[ERROR]` / `[WARN]`；任何 ERROR → 退出码 1，必须修到 0 ERROR 才可交付。
+
+闸门除文件/报告检查外还包含三组结构检查：`check_vision` 用 `scripts/vision_metrics.py` 重算「主体占比/四边留白/底部留白/亮度」并**逐字段**与 `report.json.vision` 对照（不一致为 ERROR；任一声明的渲染图无法解码即 ERROR——全部无法解码为 VISION008、部分无法解码为 VISION009，都不再当作 SKIP/WARN 放行）；`check_iteration_records` 校验 brief 迭代记录引用的渲染图真实存在、每轮写清看了哪张图与量化值（旧产物无 `vision` 字段、或 vision 带 `backfill` 迁移标记时只查引用）；`check_snapshot` 校验 `history/` 与 `best.json` 结构（只 WARN）。
 
 | ERROR 提示（关键字） | 含义 | 修法 |
 | --- | --- | --- |
 | 必需文件缺失（`model.py`/`brief.md`/`report.json`） | 有交付物没落盘 | 回阶段 1/3 补齐 |
 | 渲染图数量不足 | `renders/` 少于 3 张 .png | 确认 `--stage render/full` 跑过、`render_views` 三视角 |
+| `视觉闸门: 主体像素占比过小` / `过大` | 主体 < 画面 3% 或 > 90% | 调相机距离/构图；主体异常小先查地台/离群道具是否被算进取景 |
+| `视觉闸门: 四边留白不足` | 某边留白 < 1%（贴边/裁切） | 用 `render_views` 自动取景，或 `fit_camera(camera, objects, margin=1.15~1.3)` |
+| `视觉闸门: 底部留白过大` | 底部留白 > 55%（主体悬空/过小） | 让着地件最低点 ≈ 0，检查 origin 与位置 |
+| `迭代记录引用的渲染图不存在` / `迭代记录第 N 轮缺少「看了哪张图」` | brief 记录与 `renders/` 不一致，或没写看图证据 | 按第 9 节 5 列表格补图名与量化值 |
+| `视觉闸门: N 张渲染图全部无法解码` | `renders/` 里的 PNG 损坏/伪造（VISION008），视觉无法判定 | 删除坏图重渲；不要用脚本伪造渲染图 |
+| `视觉闸门: 部分渲染图无法解码` | 只有部分 PNG 损坏/伪造（VISION009），视觉覆盖不全等同降低验收标准 | 重渲缺失视角；不要用占位/伪造图凑数 |
+| `report.vision 与实测不一致` | report 里的视觉指标与当前渲染图不匹配（逐字段比对：主体/背景/留白/底部/亮度） | 重跑 `vision_metrics.py --write`（或 `--stage full`）让 report 与图片同步 |
+| `report.renders 统计与渲染图不符` | Pillow 可用时从 PNG 重算 `mean/std/black_ratio`，与 `report.renders[]` 记录不一致（容差 mean/std 1.0、black_ratio 0.01） | report 陈旧或渲染图被替换：重跑 `--stage full` 重新生成 report，不要手改数字 |
+| `迭代记录: report 含 vision，但…没有任何数据行` | 声明了新视觉指标却没有迭代记录（新产物至少 1 轮） | 按第 9 节补 1 行带图名与量化值的记录 |
 | 渲染图过小或 `std <= 4.0` / `black_ratio >= 0.98` | 空图/全黑/纯色图 | 检查灯光/相机/world，按第 14 节重渲 |
 | `report.renders 为空` | 脚本没保存渲染统计 | `full` 分支调用 `save_report(OUT_DIR)` |
 | `report 缺少 blend/glb 记录` | 导出没执行或路径不对 | 调 `export_all(EXPORTS_DIR, stem="model")` |
@@ -386,7 +406,7 @@ python scripts/check_output.py --out "$OUT" --min-views 4
 | 渲染图尺寸过小 | `renders/` 里有 <64px 的占位图/假图 | 删掉占位图，重跑 `--stage render` |
 | 渲染统计记录的文件不存在 | report 与 `renders/` 不一致 | 重跑 `--stage full`，让 report 与图片同时更新 |
 
-WARN 可以带过，但要在交付说明里写明原因。
+WARN 可以带过，但要在交付说明里写明原因。视觉类 WARN（底部留白 45%-55%、亮度异常、对比度低）、`report.vision.ok 与实测不一致`、`report.vision 缺少视角`、`SNAP0xx 快照结构` 都属于「可以带过但要解释」；`report.vision 与实测不一致` 与 `report.renders 统计与渲染图不符` 已升级为 **ERROR**（report 生成后又重渲/替换了图），按上表重跑 `--stage full` 或 `vision_metrics.py --write` 消除。Pillow 缺失时 `report.renders` 重算降级为不检查（不误报），完整判定需要 Pillow（CI 已安装）。若 vision 带 `backfill: true`（存量补写），仅校验图片引用，不要求新 5 列表格；下次 `--stage full` 自动重算后严格校验生效。
 
 ## 12. 阶段 9：交付
 
@@ -414,18 +434,18 @@ WARN 可以带过，但要在交付说明里写明原因。
 
 ## 14. 看图自检量化清单（每轮渲染后逐项过）
 
-> 工具：`read_image` 打开每张 `renders/view-*.png`；数值证据同时看 `report.json.renders[]`（`std`、`black_ratio`）。
+> 工具：`read_image` 打开每张 `renders/view-*.png`；数值证据看 `report.json.renders[]`（`std`、`black_ratio`）与 `report.json.vision`（主体占比/四边留白/底部留白/亮度分位；`run_blender.py --stage full` 自动写入，也可 `python scripts/vision_metrics.py --out "$OUT" --write` 重算。手工补写的 vision 带 `backfill: true` 标记；`check_output` 会逐字段对照实测值，不一致为 ERROR）。另外 `check_output` 在 Pillow 可用时还会用 sRGB 亮度公式从 PNG 重算 `report.renders[]` 的 `mean/std/black_ratio`（与 kit 保存口径一致），记录值偏差超过容差（mean/std 1.0、black_ratio 0.01）即 ERROR，说明 report 陈旧或图被替换。
 
 | # | 检查项 | 通过判据（量化） | 不通过动作 |
 | --- | --- | --- | --- |
-| 1 | 全黑/空图 | `std > 4.0` 且 `black_ratio < 0.98`（闸门口径）；更严：`std` 在 8-120、`mean` 在 20-235 | 查灯/相机/world，见 troubleshooting T-8 |
-| 2 | 构图 | 模型完整在画面内；四边留白 ≥ 画面 5%；重心居中不偏角。占高数值仅作参考（`render_views` 固定 margin=1.15：扁平件 ≈ 47%-55%、高瘦件 ≈ 85%-90% 都属正常），不要为数字反复调相机 | 主体异常小先查是否有自建地台/离群道具被算进取景 bbox（改用 `setup_floor`、移走离群件）；想要更大主体用手动相机 + `fit_camera(camera, objects, margin=1.0~1.2)` |
+| 1 | 全黑/空图 | `std > 4.0` 且 `black_ratio < 0.98`（闸门口径）；更严：`std` 在 8-120、`mean` 在 20-235（`report.json.vision.views[].luminance` 已按此口径自动算并出 WARN）。渲染图无法解码时闸门直接 ERROR（全坏 VISION008、部分坏 VISION009，禁止 SKIP/WARN 放行），先重渲 | 查灯/相机/world，见 troubleshooting T-8 |
+| 2 | 构图 | 模型完整在画面内；四边留白 ≥ 画面 5%；重心居中不偏角。占高数值仅作参考（`render_views` 固定 margin=1.15：扁平件 ≈ 47%-55%、高瘦件 ≈ 85%-90% 都属正常），不要为数字反复调相机。自动闸门：四边留白 ≥1%（`report.json.vision.margins`，低于即 `check_output` ERROR） | 主体异常小先查是否有自建地台/离群道具被算进取景 bbox（改用 `setup_floor`、移走离群件）；想要更大主体用手动相机 + `fit_camera(camera, objects, margin=1.0~1.2)` |
 | 3 | 轮廓 | 只看剪影能认出目标物件；主体最大外廓宽高比与 brief 目标误差 ≤ 10% | 修主体尺寸/比例 |
 | 4 | 比例 | 关键相对尺寸符合 brief 尺寸表（如杯柄高 ≈ 杯高 1/3-1/2）；整体高度与目标误差 ≤ 10% | 改 `PARAMS` |
 | 5 | 部件完整性 | 部件表每一行都能在图中定位到；缺件数 = 0 | 补建缺失部件 |
 | 6 | 颜色/材质 | 主色与 brief 色板一致（目视）；无整体过曝（`mean < 235`）、无整体欠曝；金属/粗糙度可区分 | 改 `mat` 参数、灯光能量 |
 | 7 | 穿插 | 相接部件无可见穿模（露出反面的穿插层）；允许的设计性嵌合需在 brief 注明 | 调位置/布尔/尺寸 |
-| 8 | 悬浮 | 着地件最低点与地面间隙 ≤ 0.005 m；设计性悬空件需有支撑逻辑 | 下移部件或加支撑件 |
+| 8 | 悬浮 | 着地件最低点与地面间隙 ≤ 0.005 m；设计性悬空件需有支撑逻辑。自动参考：`report.json.vision.bottom_gap`（底部留白）> 45% WARN、> 55% ERROR；间隙仍需看图确认 | 下移部件或加支撑件 |
 | 9 | 黑面/法线 | 无纯黑补丁、无明暗突变断裂；暗部仍能辨认形状（本机 Cycles 双面光照，法线反不会直接变黑，黑面多因无灯/材质缺失） | 查灯光/材质/是否重叠遮挡 |
 | 10 | 背景/地台 | 背景均匀无脏噪点带；地台与背景交界干净；透明背景（如启用）alpha 正常 | 调 `setup_world`/`setup_floor`/`film_transparent` |
 | 11 | 锯齿/噪点 | 预览 512 允许轻微锯齿；终渲 960 边缘平滑、无肉眼噪点（denoise 开） | 提高分辨率/采样，开 denoise |
@@ -485,6 +505,9 @@ WARN 可以带过，但要在交付说明里写明原因。
 | 预览闸门 | 同上 `--stage render --label preview` | `ok=true`；`renders` ≥3；三张图均 `read_image` 真看且清单全 PASS | 修模型/灯光/相机，进迭代（≤4 轮） |
 | 终渲闸门 | 同上 `--stage full --label final --timeout 900` | `ok=true`；`exports` 含 blend+glb；`report.json` 合法；final 图看好 | 检查导出分支/日志 |
 | 交付闸门 | `python scripts/check_output.py --out "<输出目录>"` | 退出码 0；0 ERROR（WARN 要解释） | 按 ERROR 关键字表（第 11 节）逐条修 |
+| 视觉闸门（check_output 内置） | `python scripts/vision_metrics.py --out "<输出目录>"`（或随交付闸门自动执行） | 0 ERROR：主体占比 3%-90%、四边留白 ≥1%、底部留白 ≤55%；全部声明的渲染图均可解码（任一张无法解码 → VISION008/009 ERROR）；`report.vision` 与实测逐字段一致；Pillow 可用时 `report.renders` 的 `mean/std/black_ratio` 从 PNG 重算一致（不一致 ERROR）；WARN 需解释 | 按 VISION001-007 调相机/构图/灯光；VISION008（全部无法解码）与 VISION009（部分无法解码）都必须重渲；未装 Pillow 时 SKIP，但 CI 要求 SKIP=0 |
+| SAFE_MODE 闸门 | `python scripts/safe_check.py "<输出目录>\model.py" templates\model_template.py templates\edit_model_template.py` | 0 ERROR（无 subprocess/eval/exec/网络/`__import__`/`shutil` 拷贝；无绝对路径、盘符相对、`..`、变量路径写文件，含 `Path.open`/`write_text`） | 删危险调用，改用 kit API 与白名单目录；`--selftest` 可先验证检查器本身 |
+| 快照闸门（可选，多轮迭代） | `python scripts/snapshot.py --out "<输出目录>" --list` | `best.json` 的 schema/目录一致、best 版本结构合法（`validate_best` 无 WARN） | `--rollback` 回退最佳版本（只还原 model.py/renders/report.json，不还原 exports/），之后重跑 `--stage full` 重新导出 |
 | 看图闸门 | `read_image` 打开 `renders/view-*.png`、`final-*.png` | 第 14 节 12 项全部"通过" | 回到阶段 6（或达 4 轮上限交付最佳） |
 | 仓库自检闸门（改技能本体后） | `python scripts/ci_check.py` 与 `python -m unittest discover -s tests -v` | ci_check `0 ERROR`；unittest `OK` | 按报错修文档/样例/脚本；改了 kit 再跑 `tests/kit_regression.blender.py` |
 

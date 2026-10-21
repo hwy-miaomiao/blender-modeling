@@ -1,7 +1,9 @@
 name: ci
 
-# 只跑确定性检查：不调用 Blender、不联网、不渲染。
+# 只跑确定性检查：不调用 Blender、不渲染。
 # 真实建模/渲染校验在本地做（见 AGENTS.md 第 17 节闸门表），CI 只守住「脚本别写坏」这条线。
+# 装 Pillow（可选依赖）是为了让视觉闸门在真实 examples 产物上真的运行：
+# 若 Pillow 缺失或渲染图无法解码，视觉闸门会 SKIP，这里要求 SKIP 计数必须为 0。
 
 on:
   push:
@@ -27,14 +29,38 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: 安装可选依赖 Pillow（视觉闸门需要）
+        run: pip install pillow
+
       - name: 语法编译（lib / scripts / templates / examples / tests）
         run: python -m compileall -q lib scripts templates examples tests
 
       - name: 交付闸门纯函数自测
         run: python scripts/check_output.py --selftest
 
+      - name: 视觉指标自测（不依赖 Pillow）
+        run: python scripts/vision_metrics.py --selftest
+
+      - name: SAFE_MODE 静态审查自测
+        run: python scripts/safe_check.py --selftest
+
+      - name: 版本快照自测
+        run: python scripts/snapshot.py --selftest
+
       - name: 仓库静态检查（SKILL frontmatter / 示例产物 / GLB 资产 / 文档引用）
         run: python scripts/ci_check.py
+
+      - name: 真实产物视觉闸门（lowpoly-mug，SKIP 必须为 0）
+        run: |
+          set -o pipefail
+          python scripts/check_output.py --out examples/lowpoly-mug | tee check-lowpoly-mug.log
+          ! grep -q "视觉指标: SKIP" check-lowpoly-mug.log
+
+      - name: 真实产物视觉闸门（office-chair，SKIP 必须为 0）
+        run: |
+          set -o pipefail
+          python scripts/check_output.py --out examples/office-chair | tee check-office-chair.log
+          ! grep -q "视觉指标: SKIP" check-office-chair.log
 
       - name: 单元测试（标准库 unittest，不需要 Blender）
         run: python -m unittest discover -s tests -v

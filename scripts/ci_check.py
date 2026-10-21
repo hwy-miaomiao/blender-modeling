@@ -48,6 +48,9 @@ REQUIRED_FILES = [
     "scripts/check_output.py",
     "scripts/contact_sheet.py",
     "scripts/ci_check.py",
+    "scripts/snapshot.py",
+    "scripts/vision_metrics.py",
+    "scripts/safe_check.py",
     "references/prompt-to-model.md",
     "references/render-and-check.md",
     "references/troubleshooting.md",
@@ -70,6 +73,10 @@ REQUIRED_FILES = [
     "tests/test_bl_common.py",
     "tests/test_contact_sheet.py",
     "tests/test_ci_check.py",
+    "tests/test_snapshot.py",
+    "tests/test_vision_metrics.py",
+    "tests/test_safe_check.py",
+    "tests/test_check_output_vision.py",
     "tests/kit_smoke.blender.py",
     "tests/kit_regression.blender.py",
 ]
@@ -171,6 +178,23 @@ def _enable_utf8_console() -> None:
             stream.reconfigure(encoding="utf-8")
         except Exception:
             pass
+
+
+def _load_sibling(name):
+    """加载本脚本同目录的模块（常规 import 失败时按文件路径加载）。"""
+    try:
+        return __import__(name)
+    except Exception:
+        pass
+    import importlib.util
+    module_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
+    try:
+        spec = importlib.util.spec_from_file_location(name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
 
 
 class Checker:
@@ -485,6 +509,39 @@ class Checker:
                 except Exception as exc:  # 单个样例的脏数据不能拖垮整个检查
                     self.error(f"examples/{slug} 检查过程中抛异常：{exc!r}")
 
+    # ---- 3.5 SAFE_MODE 脚本静态审查 ----
+    def check_safe_scripts(self) -> None:
+        module = _load_sibling("safe_check")
+        if module is None:
+            self.error("无法加载 scripts/safe_check.py，安全静态审查不可用")
+            return
+        total = 0
+        errors = 0
+        warns = 0
+        for path in module.default_targets(self.root):
+            total += 1
+            rel = os.path.relpath(path, self.root).replace(os.sep, "/")
+            try:
+                issues = module.audit_file(path)
+            except Exception as exc:  # 单个文件审查异常不能拖垮整个检查
+                self.error(f"{rel} 安全审查抛异常：{exc!r}")
+                errors += 1
+                continue
+            for issue in issues:
+                level = issue.get("level")
+                message = "%s:%s %s %s" % (
+                    rel, issue.get("line", 0), issue.get("code", ""),
+                    issue.get("message", ""),
+                )
+                if level == "ERROR":
+                    self.error(message)
+                    errors += 1
+                else:
+                    self.warn(message)
+                    warns += 1
+        if errors == 0:
+            self.ok(f"SAFE_MODE 静态审查通过（{total} 个脚本 0 ERROR / {warns} WARN）")
+
     # ---- 4. Python 语法 ----
     def check_python_syntax(self) -> None:
         count = 0
@@ -512,12 +569,23 @@ class Checker:
         if not self.exists(rel):
             return
         text = self.read_text(rel)
-        required = ("compileall", "check_output.py --selftest", "ci_check.py", "unittest")
+        required = (
+            "compileall",
+            "pip install pillow",
+            "check_output.py --selftest",
+            "ci_check.py",
+            "unittest",
+            "safe_check.py --selftest",
+            "vision_metrics.py --selftest",
+            "snapshot.py --selftest",
+            "check_output.py --out examples/lowpoly-mug",
+            "check_output.py --out examples/office-chair",
+        )
         missing = [token for token in required if token not in text]
         if missing:
             self.error(f"{rel} 缺少步骤关键字：{missing}")
         else:
-            self.ok(f"{rel} 含语法/自测/仓库检查/单元测试步骤")
+            self.ok(f"{rel} 含语法/自测/仓库检查/单元测试/真实产物闸门步骤")
 
     # ---- 6. 领域技巧文档 ----
     def check_domain_docs(self) -> None:
@@ -616,6 +684,7 @@ class Checker:
         self.check_skill_md()
         self.check_required_files()
         self.check_examples()
+        self.check_safe_scripts()
         self.check_python_syntax()
         self.check_ci_workflow()
         self.check_domain_docs()

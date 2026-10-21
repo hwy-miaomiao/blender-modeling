@@ -59,8 +59,11 @@ def _records(blend_bytes, glb_bytes):
 
 class ReportBytesConsistencyTests(unittest.TestCase):
     def _run(self, records):
+        # 这里的 PNG 只有头部（Pillow 无法解码），B1 之后视觉闸门会对「全部无法解码」
+        # 判 ERROR；本文件只测 report 的 bytes 一致性，所以显式关掉视觉（vision=False）。
+        # 视觉闸门本身由 tests/test_check_output_vision.py 用真实 PNG 覆盖。
         with tempfile.TemporaryDirectory(prefix="bm-check-bytes-") as tmp:
-            return check_output.run_checks(_make_out(tmp, records), min_views=1)
+            return check_output.run_checks(_make_out(tmp, records), min_views=1, vision=False)
 
     def test_matching_bytes_pass_without_warn(self):
         result = self._run(_records(len(BLEND_PAYLOAD), len(GLB_PAYLOAD)))

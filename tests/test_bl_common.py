@@ -8,6 +8,7 @@
 
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -21,6 +22,14 @@ if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 
 import bl_common  # noqa: E402
+
+
+def _pillow_available():
+    try:
+        import PIL  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 class ClassifyLogTests(unittest.TestCase):
@@ -192,6 +201,163 @@ class ExecuteTempIsolationTests(unittest.TestCase):
         self.assertTrue(result["ok"], result["errors"])
         self.assertTrue(any("临时目录" in w for w in result["warnings"]),
                         result["warnings"])
+
+
+class VisionAttachTests(unittest.TestCase):
+    """B4：vision 指标回写链路的单元测试（失败不能静默吞掉）。"""
+
+    def _make_out(self, tmp, with_png=False):
+        out = os.path.join(tmp, "out")
+        os.makedirs(os.path.join(out, "renders"))
+        os.makedirs(os.path.join(out, "exports"))
+        with open(os.path.join(out, "model.py"), "w", encoding="utf-8") as fh:
+            fh.write("import os\nimport blender_kit  # noqa\n")
+        with open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as fh:
+            fh.write("# brief\n")
+        report = {
+            "object_count": 1, "mesh_count": 1, "camera_count": 1,
+            "light_count": 1, "total_tris": 12, "dimensions": [1.0, 1.0, 1.0],
+            "renders": [], "exports": {},
+        }
+        if with_png:
+            from PIL import Image  # 延迟导入，只有 skipUnless 通过的用例才会走到
+            image = Image.new("RGB", (512, 512), (128, 128, 128))
+            for x in range(180, 330):
+                for y in range(150, 400):
+                    image.putpixel((x, y), (240, 240, 240))
+            image.save(os.path.join(out, "renders", "view-front.png"))
+            report["renders"] = [{"path": "renders/view-front.png"}]
+        with open(os.path.join(out, "report.json"), "w", encoding="utf-8") as fh:
+            json.dump(report, fh)
+        return out
+
+    def _load_report(self, out):
+        with open(os.path.join(out, "report.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_without_vision_module_warns_and_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._make_out(tmp)
+            warnings = []
+            with mock.patch.object(bl_common, "_load_vision_metrics",
+                                   return_value=None):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = bl_common._attach_vision_metrics(
+                        out, warnings, quiet=True)
+            self.assertFalse(result["attached"])
+            self.assertTrue(any("视觉指标" in w for w in warnings), warnings)
+            self.assertNotIn("vision", self._load_report(out))
+
+    def test_without_pillow_warns_and_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._make_out(tmp)
+            warnings = []
+            module = bl_common._load_vision_metrics()
+            self.assertIsNotNone(module)
+            with mock.patch.object(module, "pillow_available", return_value=False):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = bl_common._attach_vision_metrics(
+                        out, warnings, quiet=True)
+            self.assertFalse(result["attached"])
+            self.assertTrue(any("视觉指标" in w for w in warnings), warnings)
+            self.assertNotIn("vision", self._load_report(out))
+
+    @unittest.skipUnless(_pillow_available(), "需要 Pillow 生成真实 PNG")
+    def test_attach_writes_vision_into_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._make_out(tmp, with_png=True)
+            warnings = []
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = bl_common._attach_vision_metrics(out, warnings, quiet=True)
+            self.assertTrue(result["attached"], result)
+            self.assertEqual(result["views"], 1)
+            self.assertEqual(warnings, [])
+            report = self._load_report(out)
+            self.assertIsInstance(report.get("vision"), dict)
+            self.assertNotIn("backfill", report["vision"],
+                             "新产物自动回写不应标记 backfill")
+
+
+class ExecuteVisionTests(unittest.TestCase):
+    """B4：execute() 的 vision 分支：仅在 full 成功后调用一次。"""
+
+    def _fake_run(self):
+        fake = subprocess.CompletedProcess(args=[], returncode=0,
+                                           stdout=b"Blender 4.0.2\n")
+        version = {"ok": True, "version": "4.0.2", "tuple": (4, 0, 2)}
+        return mock.patch.object(bl_common, "blender_version", return_value=version), \
+            mock.patch.object(bl_common.subprocess, "run", return_value=fake)
+
+    def _prepare_full_artifacts(self, out_dir):
+        """full 阶段闸门要求真的有 renders/ 与 exports/ 产物。"""
+        os.makedirs(os.path.join(out_dir, "renders"), exist_ok=True)
+        os.makedirs(os.path.join(out_dir, "exports"), exist_ok=True)
+        with open(os.path.join(out_dir, "renders", "view-front.png"), "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        with open(os.path.join(out_dir, "exports", "model.glb"), "wb") as fh:
+            fh.write(b"glTF" + b"\x00" * 32)
+
+    def test_full_success_attaches_vision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = os.path.join(tmp, "model.py")
+            with open(script, "w", encoding="utf-8") as fh:
+                fh.write("print('noop')\n")
+            out_dir = os.path.join(tmp, "out")
+            self._prepare_full_artifacts(out_dir)
+            version_patch, run_patch = self._fake_run()
+            with version_patch, run_patch, mock.patch.object(
+                    bl_common, "_attach_vision_metrics",
+                    return_value={"attached": True, "views": 3}) as attach:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = bl_common.execute(
+                        script, out_dir, stage="full",
+                        timeout=5, blender=sys.executable, quiet=True, vision=True)
+            self.assertTrue(result["ok"], result["errors"])
+            self.assertEqual(result["vision"], {"attached": True, "views": 3})
+            attach.assert_called_once()
+
+    def test_build_stage_and_disabled_do_not_attach(self):
+        for stage, vision in (("build", True), ("full", False)):
+            with tempfile.TemporaryDirectory() as tmp:
+                script = os.path.join(tmp, "model.py")
+                with open(script, "w", encoding="utf-8") as fh:
+                    fh.write("print('noop')\n")
+                out_dir = os.path.join(tmp, "out")
+                if stage == "full":
+                    self._prepare_full_artifacts(out_dir)
+                version_patch, run_patch = self._fake_run()
+                with version_patch, run_patch, mock.patch.object(
+                        bl_common, "_attach_vision_metrics") as attach:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        result = bl_common.execute(
+                            script, out_dir, stage=stage,
+                            timeout=5, blender=sys.executable, quiet=True,
+                            vision=vision)
+                self.assertTrue(result["ok"], result["errors"])
+                self.assertIsNone(result["vision"])
+                attach.assert_not_called()
+
+
+class RunBlenderVisionFlagTests(unittest.TestCase):
+    """B4：run_blender.py --no-vision 必须把 vision=False 透传下去。"""
+
+    def test_default_passes_vision_true_and_flag_disables(self):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import run_blender
+        captured = []
+
+        def fake_execute(**kwargs):
+            captured.append(kwargs)
+            return {"ok": True}
+
+        with mock.patch.object(run_blender.bl_common, "execute",
+                               side_effect=fake_execute):
+            self.assertEqual(run_blender.main(
+                ["--script", "model.py", "--out", "out"]), 0)
+            self.assertEqual(run_blender.main(
+                ["--script", "model.py", "--out", "out", "--no-vision"]), 0)
+        self.assertTrue(captured[0]["vision"])
+        self.assertFalse(captured[1]["vision"])
 
 
 if __name__ == "__main__":

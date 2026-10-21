@@ -9,11 +9,12 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 
 用户输入的提示词就是建模目标。如果本技能被调用时没有拿到具体提示词，先向用户要一句描述（主体 + 风格 + 用途），不要凭空猜。
 
-## 三条铁律（违反任一条视为任务失败）
+## 四条铁律（违反任一条视为任务失败）
 
 1. **先读规范再动手。** 本文件只是入口，完整流程、命令与验收标准在 [`AGENTS.md`](AGENTS.md)。动手前必须整篇读完，并严格按其「阶段 0 → 阶段 9」执行。
 2. **必须真看图再交付。** 每轮渲染后用 `read_image` 打开 `renders/view-*.png` 逐张检查；禁止只看日志就宣称模型没问题。
-3. **必须过闸门。** `scripts/check_output.py` 0 ERROR 且 `scripts/doctor.py` 无 FAIL，才允许向用户交付。
+3. **必须过闸门。** `scripts/check_output.py` 0 ERROR（含视觉指标闸门与迭代记录校验）且 `scripts/doctor.py` 无 FAIL，才允许向用户交付。
+4. **SAFE_MODE 边界。** `model.py` 禁止 `subprocess`/`os.system`/`eval`/`exec`/网络库/`__import__`/`shutil` 拷贝；写文件只允许白名单目录或单段 `report.json`/`brief.md`，禁止绝对路径、盘符相对路径（`C:evil.txt`）、`..` 与无法静态确定的变量路径（含 `Path.open`/`write_text`）；交付前 `python scripts/safe_check.py` 必须 0 ERROR。
 
 ## 最小工作流（细节以 AGENTS.md 为准）
 
@@ -21,10 +22,11 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 1. 解析提示词 → 写建模简报 `<输出目录>/brief.md`（默认不问用户，把假设写清楚）
 2. 复制 `templates/model_template.py` 为 `<输出目录>/model.py`，用 `lib/blender_kit.py` 的 API 实现建模
 3. build 自检：`python scripts/run_blender.py --script <输出目录>/model.py --out <输出目录> --stage build`
-4. 渲染预览后**看图自检**：read_image 打开 `<输出目录>/renders/view-*.png`，对照提示词找问题
-5. 迭代修正（最多 4 轮，每轮只改 1-2 类问题）
+4. 渲染预览后**看图自检**：read_image 打开 `<输出目录>/renders/view-*.png`，对照提示词找问题；量化值看 `report.json.vision`（主体占比/四边留白/底部留白/亮度）
+5. 迭代修正（最多 4 轮，每轮只改 1-2 类问题；迭代记录写清「看了哪张图 + 量化值」，可选 `python scripts/snapshot.py --out <输出目录>` 打快照；`--rollback` 只还原 model.py/renders/report.json，不还原 exports/，回滚后重跑 `--stage full`）
+   > 旧项目没有 `report.json.vision` 时可 `python scripts/vision_metrics.py --out <输出目录> --write` 补写（标记 `backfill`，只校验图片引用；下次 `--stage full` 后严格校验生效）。
 6. 终渲导出：`--stage full` → blend/glb + 最终渲染图 + `report.json`
-7. 交付闸门：`python scripts/check_output.py --out <输出目录>`
+7. 交付闸门：`python scripts/check_output.py --out <输出目录>` + `python scripts/safe_check.py <输出目录>/model.py`
 8. 向用户交付：文件路径、怎么看预览、还能怎么改
 
 > **改已有模型（模式 B）**：不是从第 1 步开始——用 `templates/edit_model_template.py` 复制出 `model.py`，通过 `--blend <源.blend>` 打开现成模型，只填 `EDITS` 字典，然后同样走 build → render → full → 闸门。详见 `AGENTS.md` 第 10.5 节。

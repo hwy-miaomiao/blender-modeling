@@ -44,6 +44,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=600.0, help="超时秒数（默认 600）")
     parser.add_argument("--label", default=None, help="日志文件名前缀（默认用 stage）")
     parser.add_argument("--blender", default=None, help="显式指定 Blender 可执行文件")
+    parser.add_argument("--no-vision", action="store_true",
+                        help="full 成功后不计算视觉指标（默认会把 vision 写入 report.json）")
     parser.add_argument("extra", nargs=argparse.REMAINDER,
                         help="`--` 之后的参数会透传给建模脚本（sys.argv）")
     args = parser.parse_args(argv)
@@ -65,6 +67,7 @@ def main(argv=None):
         label=args.label,
         extra_args=extra,
         blender=args.blender,
+        vision=not args.no_vision,
     )
     return 0 if result.get("ok") else 1
 

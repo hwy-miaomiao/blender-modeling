@@ -15,8 +15,22 @@
 - renders/ 至少有 --min-views 张 PNG，每张有真实内容（>15 KB），并校验 PNG 头部合法
 - report.json 场景统计：物体/网格/三角面/尺寸/相机/灯光/导出记录
 - report.json 渲染统计：std>4.0 且 black_ratio<0.98（防止交付全黑图）
+- report.json 渲染统计重算（Pillow 可选）：Pillow 可用时从渲染图重建 mean/std/black_ratio
+  并与 report.renders 记录对照，不一致报 ERROR（报告陈旧或伪造）；Pillow 缺失/解码失败时
+  静默降级，由视觉闸门兜底
 - report.json 的 exports.*.bytes 与实际文件大小不一致时只 WARN（旧版 report 可能陈旧，不阻断）
 - model.py 通过 BLENDER_KIT_DIR 导入 kit（防止交付跑不起来的脚本）
+- 视觉指标闸门（B 项，Pillow 可选）：renders/*.png 的主体像素占比、四边留白、
+  底部留白（着地间隙）、亮度分布，阈值见 vision_metrics.py 模块常量；Pillow 缺失时
+  SKIP 而不报错，--no-vision 可显式关闭。有 PNG 却全部无法解码时不再 SKIP，直接
+  报 ERROR（VISION008）——「无法判定」不能当「通过」
+- report.vision 与实测逐字段对照（主体/背景/留白/底部留白/亮度 mean,std），不一致
+  报 ERROR；记录的 vision.ok 与实测不一致报 WARN
+- 迭代记录校验（B 项）：brief.md「## 迭代记录」表里引用的渲染图必须真实存在；
+  report.json 带 vision 字段（新产物）时，每轮要求写清看了哪张图与关键量化值；
+  存量迁移（vision.backfill=true）只校验图片引用；声明 vision 却没有迭代数据行报 ERROR
+- 版本快照一致性（A 项）：若产物目录有 best.json / history/，校验其结构一致性
+  （只 WARN，不改变 0 ERROR 语义）
 
 通过条件：0 ERROR。WARN 需人工判断。退出码：通过 0，失败 1。
 """
@@ -25,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import struct
@@ -98,6 +113,58 @@ def png_size(path):
 
 def is_blend_bytes(head):
     return head.startswith(BLEND_MAGIC) or head.startswith(GZIP_MAGIC)
+
+
+def _recompute_render_stats(path):
+    """B10 残留：用 Pillow 从渲染图重算 (mean, std, black_ratio)。
+
+    口径与 blender_kit 记录的渲染统计一致：0-255 尺度亮度
+    lum = 0.2126*r + 0.7152*g + 0.0722*b（sRGB 通道值），总体标准差，
+    alpha <= 0.01 的透明像素忽略、black_ratio 为 lum < 8 的像素占比。
+    Pillow 缺失或图片无法解码时返回 None（调用方静默降级，由视觉闸门兜底）。
+    """
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        with Image.open(path) as image:
+            image.load()
+            rgba = image.convert("RGBA")
+            # 先按颜色直方图加权统计：512x512 渲染图通常只有几千种颜色，
+            # 比逐像素快一个数量级；超大图 getcolors 返回 None 时退回逐像素。
+            colors = rgba.getcolors(maxcolors=1 << 20)
+            pixels = None if colors else list(rgba.getdata())
+    except Exception:
+        return None
+    total = 0
+    sum_lum = 0.0
+    sum_sq = 0.0
+    black = 0
+
+    def _accumulate(red, green, blue, alpha, count):
+        nonlocal total, sum_lum, sum_sq, black
+        if alpha <= 2:  # 0.01 * 255，与 kit 的 alpha > 0.01 口径一致
+            return
+        lum = red * 0.2126 + green * 0.7152 + blue * 0.0722
+        total += count
+        sum_lum += lum * count
+        sum_sq += lum * lum * count
+        if lum < 8.0:
+            black += count
+
+    if colors:
+        for count, channel in colors:
+            red, green, blue, alpha = channel
+            _accumulate(red, green, blue, alpha, count)
+    else:
+        for red, green, blue, alpha in pixels or ():
+            _accumulate(red, green, blue, alpha, 1)
+    if total <= 0:
+        return None
+    mean = sum_lum / total
+    variance = max(sum_sq / total - mean * mean, 0.0)
+    return {"mean": mean, "std": math.sqrt(variance), "black_ratio": black / float(total)}
 
 
 def is_glb_bytes(head):
@@ -312,6 +379,26 @@ def check_renders(checker, out_dir, min_views):
     return pngs
 
 
+def _check_render_stats_consistency(checker, label, entry, path):
+    """B10 残留：report.renders 的 mean/std/black_ratio 必须与渲染图重算值一致。
+
+    Pillow 可用时逐字段对照，不一致报 ERROR（与 report.vision 逐字段对照同级）；
+    Pillow 缺失或图片无法解码时静默降级（对应 ERROR 由渲染文件/视觉闸门负责）。
+    """
+    measured = _recompute_render_stats(path)
+    if measured is None:
+        return
+    for field, tolerance in (("mean", 1.0), ("std", 1.0), ("black_ratio", 0.01)):
+        recorded = entry.get(field)
+        if not _is_number(recorded):
+            continue
+        if abs(float(recorded) - measured[field]) > tolerance:
+            checker.error(
+                "report.renders 统计与渲染图不符（%s）: %s 记录=%.4f 实测=%.4f"
+                "（容差 %.2f，疑 report 陈旧或伪造，重跑 --stage full）"
+                % (field, label, float(recorded), measured[field], tolerance))
+
+
 def check_report(checker, out_dir):
     report_path = os.path.join(out_dir, "report.json")
     report = load_json(report_path)
@@ -404,16 +491,287 @@ def check_report(checker, out_dir):
             checker.error("渲染统计里的路径必须是相对路径: %r" % (Path,))
         elif not os.path.isfile(resolved):
             checker.error("渲染统计记录的文件不存在: %s" % resolved)
+        else:
+            _check_render_stats_consistency(checker, label, entry, resolved)
 
 
-def run_checks(out_dir, min_views=3):
+# ---------------------------------------------------------------------------
+# B 项：视觉指标闸门 + 迭代记录校验
+# ---------------------------------------------------------------------------
+
+ITERATION_HEADING_RE = re.compile(r"^##\s*迭代记录\s*$", re.M)
+NEXT_SECTION_RE = re.compile(r"^##\s", re.M)
+IMG_REF_RE = re.compile(r"((?:renders/)?(?:view|final)[-_][A-Za-z0-9_-]+\.png)")
+VIEW_NAME_RE = re.compile(r"\b(front|right|iso|back|left|top|close|closeup)\b", re.I)
+NUMBER_RE = re.compile(r"\d")
+VISION_TOLERANCE = 0.02  # report.vision 与重算值允许的绝对误差（占比）
+
+
+def _load_sibling(name):
+    """惰性导入同目录脚本（vision_metrics / snapshot），失败返回 None。"""
+    try:
+        return __import__(name)
+    except Exception:
+        try:
+            import importlib.util
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:
+            return None
+
+
+def check_vision(checker, out_dir, pngs, no_vision=False):
+    """视觉指标闸门：主体占比 / 四边留白 / 底部留白 / 亮度分布。
+
+    返回 {"available": bool, "views": {文件名: 指标}}，供迭代记录校验使用。
+    只有 Pillow 缺失（可选依赖）时才 SKIP；有 PNG 却解不出来属于「无法判定」：
+    全部无法解码 = VISION008 ERROR，部分无法解码 = VISION009 ERROR（R3-B1：
+    部分伪造/损坏的渲染图会让视觉覆盖变小却仍可交付，因此不再降级为 WARN）。
+    """
+    if no_vision:
+        checker.ok("视觉指标: 已用 --no-vision 关闭")
+        return {"available": False, "views": {}}
+    module = _load_sibling("vision_metrics")
+    if module is None:
+        checker.ok("视觉指标: SKIP（vision_metrics.py 不可导入）")
+        return {"available": False, "views": {}}
+    if not module.pillow_available():
+        checker.ok("视觉指标: SKIP（未安装 Pillow，可选依赖）")
+        return {"available": False, "views": {}}
+    if not pngs:
+        checker.ok("视觉指标: SKIP（没有可分析的渲染图）")
+        return {"available": False, "views": {}}
+    analysis = module.analyze_out(out_dir)
+    views = {view["file"]: view for view in analysis.get("views", [])}
+    skipped = analysis.get("skipped") or []
+    if not views:
+        # B1：有 PNG 却一张都解不出来 = 无法判定，绝不能当 SKIP 放行。
+        checker.error("视觉闸门: %d 张渲染图全部无法解码（VISION008，渲染图损坏或伪造）："
+                      "%s；无法判定不能视为通过，请重渲"
+                      % (len(skipped), ", ".join(skipped[:4]) or "-"))
+        return {"available": False, "views": {}}
+    if skipped:
+        # R3-B1：只坏一部分时，视觉指标覆盖不到全部视角，等同降低验收覆盖，
+        # 不允许作为 WARN 带过。信息里写清是哪几张图。
+        names = ", ".join(skipped[:4])
+        if len(skipped) > 4:
+            names += " 等 %d 张" % len(skipped)
+        checker.error("视觉闸门: 部分渲染图无法解码（VISION009）：%d/%d 张（%s），"
+                      "视觉指标无法覆盖全部视角，禁止交付（请重渲这些图）"
+                      % (len(skipped), len(pngs), names))
+    for view in analysis.get("views", []):
+        margins = view.get("margins") or {}
+        margin_min = min(margins.values()) if margins else 0.0
+        checker.ok("视觉指标: %s 主体=%.1f%% 最小留白=%.1f%% 底部=%.1f%% 亮度 mean=%.0f std=%.0f"
+                   % (view["file"], view["subject_ratio"] * 100, margin_min * 100,
+                      view["bottom_gap"] * 100, view["luminance"]["mean"],
+                      view["luminance"]["std"]))
+    for issue in analysis.get("issues", []):
+        message = "视觉闸门: %s %s" % (issue.get("file") or "-", issue["message"])
+        if issue["level"] == "ERROR":
+            checker.error(message)
+        else:
+            checker.warn(message)
+    _check_vision_report_consistency(checker, out_dir, views, analysis)
+    return {"available": True, "views": views}
+
+
+def _check_vision_report_consistency(checker, out_dir, views, analysis):
+    """B10：report.vision 与实测逐字段对照；不一致说明渲染图/报告不同步。"""
+    report = load_json(os.path.join(out_dir, "report.json"))
+    recorded = report.get("vision") if isinstance(report, dict) else None
+    if not isinstance(recorded, dict):
+        return
+    recorded_map = {}
+    for item in recorded.get("views") or []:
+        if isinstance(item, dict) and item.get("file"):
+            recorded_map[item["file"]] = item
+    for name, view in views.items():
+        old = recorded_map.get(name)
+        if not isinstance(old, dict):
+            checker.warn("report.vision 缺少视角 %s（报告可能陈旧，重跑 --stage full 或 "
+                         "vision_metrics.py --write）" % name)
+            continue
+        for problem in _vision_mismatches(old, view):
+            checker.error("report.vision 与实测不一致: %s %s（渲染图更新后请重跑 "
+                          "vision_metrics.py --write）" % (name, problem))
+    for name in recorded_map:
+        if name not in views:
+            checker.warn("report.vision 记录了 %s，但实测没有对应渲染图" % name)
+    recorded_ok = recorded.get("ok")
+    measured_ok = not any(item.get("level") == "ERROR"
+                          for item in analysis.get("issues", []))
+    if isinstance(recorded_ok, bool) and recorded_ok != measured_ok:
+        checker.warn("report.vision.ok 与实测不一致: 记录=%s 实测=%s"
+                     % (recorded_ok, measured_ok))
+
+
+def _vision_mismatches(recorded, measured):
+    """逐字段比较 report.vision 记录的视角指标与本次实测值。"""
+    problems = []
+    for field, tolerance in (("subject_ratio", VISION_TOLERANCE),
+                             ("background_ratio", VISION_TOLERANCE),
+                             ("bottom_gap", VISION_TOLERANCE)):
+        old = recorded.get(field)
+        new = measured.get(field)
+        if _is_number(old) and _is_number(new) and abs(float(old) - float(new)) > tolerance:
+            problems.append("%s 记录=%.3f 实测=%.3f" % (field, float(old), float(new)))
+    old_margins = recorded.get("margins")
+    new_margins = measured.get("margins")
+    if isinstance(old_margins, dict) and isinstance(new_margins, dict):
+        for side in ("left", "right", "top", "bottom"):
+            old = old_margins.get(side)
+            new = new_margins.get(side)
+            if _is_number(old) and _is_number(new) and abs(float(old) - float(new)) > VISION_TOLERANCE:
+                problems.append("margins.%s 记录=%.3f 实测=%.3f"
+                                % (side, float(old), float(new)))
+    old_lum = recorded.get("luminance")
+    new_lum = measured.get("luminance")
+    if isinstance(old_lum, dict) and isinstance(new_lum, dict):
+        for field in ("mean", "std"):
+            old = old_lum.get(field)
+            new = new_lum.get(field)
+            if _is_number(old) and _is_number(new) and abs(float(old) - float(new)) > 2.0:
+                problems.append("luminance.%s 记录=%.1f 实测=%.1f"
+                                % (field, float(old), float(new)))
+    return problems
+
+
+def _iteration_rows(section):
+    """从迭代记录小节里解析表格数据行（跳过表头与分隔行）。"""
+    rows = []
+    lines = section.splitlines()
+    header_seen = False
+    for line in lines:
+        text = line.strip()
+        if not text.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in text.strip("|").split("|")]
+        if all(set(cell) <= set("-: ") for cell in cells):
+            continue
+        if not header_seen and any("轮次" in cell for cell in cells):
+            header_seen = True
+            continue
+        if len(cells) >= 2:
+            rows.append(cells)
+    return rows
+
+
+def check_iteration_records(checker, out_dir, vision_state):
+    """迭代记录校验：图片引用必须存在；新产物每轮必须写图名 + 量化值。"""
+    brief_path = os.path.join(out_dir, "brief.md")
+    if not os.path.isfile(brief_path):
+        return
+    try:
+        with open(brief_path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return
+    heading = ITERATION_HEADING_RE.search(text)
+    if heading is None:
+        checker.ok("迭代记录: 未找到「## 迭代记录」小节（旧产物，跳过格式校验）")
+        return
+    rest = text[heading.end():]
+    next_section = NEXT_SECTION_RE.search(rest)
+    section = rest[:next_section.start()] if next_section else rest
+    rows = _iteration_rows(section)
+    renders_dir = os.path.join(out_dir, "renders")
+
+    # 1) 任何显式 png 引用都必须真实存在（新旧产物都查）
+    all_refs = IMG_REF_RE.findall(section)
+    missing = []
+    resolved_ok = 0
+    for ref in all_refs:
+        candidate = (os.path.join(out_dir, ref.replace("/", os.sep))
+                     if ref.startswith("renders/")
+                     else os.path.join(renders_dir, ref))
+        if os.path.isfile(candidate):
+            resolved_ok += 1
+        else:
+            missing.append(ref)
+    for ref in missing:
+        checker.error("迭代记录引用的渲染图不存在: %s" % ref)
+    if not all_refs:
+        checker.ok("迭代记录: %d 轮，未写显式图片路径" % len(rows))
+    elif not missing:
+        checker.ok("迭代记录: %d 轮，%d 处图片引用均存在" % (len(rows), resolved_ok))
+
+    # 2) 新产物（report 带 vision 字段）要求每轮写清看了哪张图 + 关键量化值。
+    #    旧产物（examples/* 的 report 没有 vision）只做上面的「引用文件存在」校验；
+    #    存量迁移（vision.backfill=true，手工 --write 补写）只校验引用，不强制新表；
+    #    report 声明 vision 却没有任何迭代数据行 = 闸门形同虚设，直接 ERROR（B9）。
+    report = load_json(os.path.join(out_dir, "report.json"))
+    vision = report.get("vision") if isinstance(report, dict) else None
+    if not isinstance(vision, dict):
+        checker.ok("迭代记录: report 无 vision 字段（旧产物，跳过每轮格式校验）")
+        return
+    if vision.get("backfill"):
+        checker.ok("迭代记录: report.vision 为存量迁移补写（backfill），只校验图片引用")
+        return
+    if not vision_state.get("available"):
+        return
+    if not rows:
+        checker.error("迭代记录: report 含 vision，但「## 迭代记录」没有任何数据行"
+                      "（新产物至少记录 1 轮迭代）")
+        return
+    view_names = sorted(vision_state.get("views") or {})
+    for index, cells in enumerate(rows, start=1):
+        joined = " | ".join(cells)
+        has_image = bool(IMG_REF_RE.search(joined) or VIEW_NAME_RE.search(joined))
+        if not has_image:
+            checker.error("迭代记录第 %d 轮缺少「看了哪张图」（写 view-front/right/iso "
+                          "或 renders/*.png）" % index)
+            continue
+        mentioned = VIEW_NAME_RE.findall(joined)
+        for word in mentioned:
+            matches = [name for name in view_names if word.lower() in name.lower()]
+            if not matches:
+                checker.warn("迭代记录第 %d 轮提到 %s 视角，但 renders/ 中没有对应图片"
+                             % (index, word))
+        if not NUMBER_RE.search(joined):
+            checker.warn("迭代记录第 %d 轮缺少关键量化值（如 mean/std/主体占比）" % index)
+
+
+# ---------------------------------------------------------------------------
+# A 项：版本快照结构一致性
+# ---------------------------------------------------------------------------
+
+def check_snapshot(checker, out_dir):
+    """best.json / history 结构一致性（只 WARN，不影响 0 ERROR 语义）。"""
+    best_path = os.path.join(out_dir, "best.json")
+    history = os.path.join(out_dir, "history")
+    if not os.path.isfile(best_path) and not os.path.isdir(history):
+        return
+    module = _load_sibling("snapshot")
+    if module is None:
+        checker.warn("版本快照: 存在 best.json/history 但 snapshot.py 不可导入，跳过校验")
+        return
+    issues = module.validate_best(out_dir)
+    if not issues:
+        checker.ok("版本快照: best.json 与 history 结构一致")
+        return
+    for issue in issues:
+        message = "版本快照: %s" % issue["message"]
+        if issue["level"] == "ERROR":
+            checker.error(message)
+        else:
+            checker.warn(message)
+
+
+def run_checks(out_dir, min_views=3, vision=True):
     checker = Checker()
     if not os.path.isdir(out_dir):
         checker.error("输出目录不存在: %s" % out_dir)
         return checker
     check_required_files(checker, out_dir)
-    check_renders(checker, out_dir, min_views)
+    pngs = check_renders(checker, out_dir, min_views)
     check_report(checker, out_dir)
+    vision_state = check_vision(checker, out_dir, pngs, no_vision=not vision)
+    check_iteration_records(checker, out_dir, vision_state)
+    check_snapshot(checker, out_dir)
     return checker
 
 
@@ -500,7 +858,7 @@ def selftest():
 
         # 构造最小输出目录，验证 run_checks 的导出文件定位：规范名、模式 B 名、
         # 缺失、内容损坏（最后两种必须 ERROR，防止放宽文件名后出现假绿）。
-        def build_out(name, export_files, exports_record):
+        def build_out(name, export_files, exports_record, extra_report=None):
             base = os.path.join(tmp, name)
             os.makedirs(os.path.join(base, "renders"))
             os.makedirs(os.path.join(base, "exports"))
@@ -517,12 +875,16 @@ def selftest():
                     fh.write(payload)
             payload = dict(report)
             payload["exports"] = exports_record
+            if extra_report:
+                payload.update(extra_report)
             with open(os.path.join(base, "report.json"), "w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
             return base
 
-        def expect_out(name, built):
-            result = run_checks(built, min_views=1)
+        def expect_out(name, built, vision=False):
+            # 自测用的 PNG 只有合法头部（Pillow 解不出来），默认关闭视觉闸门，
+            # 视觉相关行为由下方专门的用例覆盖。
+            result = run_checks(built, min_views=1, vision=vision)
             expect(name, not result.failed)
             if result.failed:
                 for level, message in result.items:
@@ -580,7 +942,7 @@ def selftest():
 
         # 没有任何导出文件仍必须 ERROR（不能因为放宽文件名而假绿）
         empty_out = build_out("out-no-exports", {}, canonical_exports)
-        missing = run_checks(empty_out, min_views=1)
+        missing = run_checks(empty_out, min_views=1, vision=False)
         expect("缺导出文件仍报 ERROR", missing.failed)
         expect("缺导出文件报满 2 条 ERROR",
                sum(1 for level, _ in missing.items if level == "ERROR") >= 2)
@@ -590,7 +952,7 @@ def selftest():
             "exports/model.blend": b"not-a-blend",
             "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
         }, canonical_exports)
-        corrupt = run_checks(corrupt_out, min_views=1)
+        corrupt = run_checks(corrupt_out, min_views=1, vision=False)
         expect("损坏的规范名导出仍报 ERROR", corrupt.failed)
 
         # 规范名 exports/model.* 不能被 exports/ 里排序更靠前的损坏文件遮蔽
@@ -601,7 +963,7 @@ def selftest():
             "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
             "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
         }, {})  # report 故意不带 exports 记录
-        shadow = run_checks(shadowed, min_views=1)
+        shadow = run_checks(shadowed, min_views=1, vision=False)
         shadow_msgs = [message for _level, message in shadow.items]
         expect("规范名导出不被同目录损坏文件遮蔽",
                not any("魔数" in message for message in shadow_msgs))
@@ -615,10 +977,141 @@ def selftest():
             "exports/deliverable.blend": BLEND_MAGIC + b"\x00" * 2048,
             "exports/deliverable.glb": GLB_MAGIC + b"\x00" * 1024,
         }, {})
-        loose_result = run_checks(loose, min_views=1)
+        loose_result = run_checks(loose, min_views=1, vision=False)
         expect("非规范文件名仍能通过 exports 扫描定位",
                not any("缺少导出文件" in message or "魔数" in message
                        for _level, message in loose_result.items))
+
+        # B 项：迭代记录里的图片引用必须真实存在（新旧产物都查）
+        iteration_exports = {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }
+
+        def write_brief(base, body):
+            with open(os.path.join(base, "brief.md"), "w", encoding="utf-8") as fh:
+                fh.write("# brief\n\n## 迭代记录\n\n"
+                         "| 轮次 | 问题（证据） | 改了什么 | 重跑结果 |\n"
+                         "| --- | --- | --- | --- |\n" + body)
+
+        legacy_iter = build_out("out-iteration-legacy", dict(iteration_exports),
+                                canonical_exports)
+        write_brief(legacy_iter,
+                    "| 1 | right 视角杯柄只剩一条竖线 | handle.radius 0.05 | mean=153-178 |\n")
+        expect("旧格式迭代记录（无 png 路径）不报 ERROR",
+               not run_checks(legacy_iter, min_views=1, vision=False).failed)
+
+        good_iter = build_out("out-iteration-ref", dict(iteration_exports),
+                              canonical_exports)
+        write_brief(good_iter,
+                    "| 1 | 看了 renders/view-front.png，mean=212 | handle 加粗 | 正常 |\n")
+        expect("迭代记录引用存在的渲染图不报 ERROR",
+               not run_checks(good_iter, min_views=1, vision=False).failed)
+
+        bad_iter = build_out("out-iteration-missing", dict(iteration_exports),
+                             canonical_exports)
+        write_brief(bad_iter, "| 1 | 看了 renders/view-missing.png | 改 PARAMS | 正常 |\n")
+        expect("迭代记录引用不存在的渲染图必须 ERROR",
+               run_checks(bad_iter, min_views=1).failed)
+
+        # --no-vision 关闭视觉闸门后仍按原有语义通过
+        expect("--no-vision 等价关闭视觉闸门",
+               not run_checks(good_iter, min_views=1, vision=False).failed)
+
+        # B1：渲染图全部无法解码时不能 SKIP 放行。自测 PNG 只有头部，Pillow 可用时
+        # 正好制造「有 PNG 但一张都解不出来」；没装 Pillow 时无法区分，按 SKIP 语义。
+        bad_png = build_out("out-bad-png", dict(iteration_exports), canonical_exports)
+        vision_module = _load_sibling("vision_metrics")
+        if vision_module is not None and vision_module.pillow_available():
+            expect("渲染图全部无法解码时视觉闸门必须 ERROR",
+                   run_checks(bad_png, min_views=1).failed)
+        else:
+            expect("无 Pillow 时坏图无法区分，视觉闸门 SKIP 不报 ERROR",
+                   not run_checks(bad_png, min_views=1).failed)
+
+        # B10 残留：Pillow 可用时 check_report 会用 PNG 重算 mean/std/black_ratio 并与
+        # report.renders 对照。自测 PNG 只有头部，重算必须安全返回 None（静默降级），
+        # 由上面的视觉闸门用例兜底，不能抛异常打断闸门。
+        expect("坏 PNG 重算渲染统计返回 None（降级不崩）",
+               _recompute_render_stats(
+                   os.path.join(bad_png, "renders", "view-front.png")) is None)
+
+        # R3-B1：只坏一部分渲染图时视觉指标覆盖不全，也必须 ERROR（不能降级为 WARN）。
+        # 用桩替换 _load_sibling 返回的 vision 模块，避免自测依赖 Pillow 生成真实 PNG。
+        class _StubVision(object):
+            @staticmethod
+            def pillow_available():
+                return True
+
+            @staticmethod
+            def analyze_out(_out_dir):
+                return {
+                    "views": [{
+                        "file": "view-front.png", "subject_ratio": 0.2,
+                        "background_ratio": 0.8, "bottom_gap": 0.2,
+                        "margins": {"left": 0.2, "right": 0.2,
+                                    "top": 0.2, "bottom": 0.2},
+                        "luminance": {"mean": 120.0, "std": 30.0},
+                    }],
+                    "skipped": ["view-right.png"],
+                    "issues": [],
+                }
+
+        original_loader = _load_sibling
+        try:
+            globals()["_load_sibling"] = lambda name: (
+                _StubVision if name == "vision_metrics" else original_loader(name))
+            partial_checker = Checker()
+            check_vision(partial_checker, bad_png,
+                         ["view-front.png", "view-right.png", "view-iso.png"])
+        finally:
+            globals()["_load_sibling"] = original_loader
+        expect("部分渲染图无法解码时视觉闸门必须 ERROR", partial_checker.failed)
+        expect("部分坏图 ERROR 指明缺失视角（VISION009）",
+               any("VISION009" in message and "view-right.png" in message
+                   for _level, message in partial_checker.items))
+
+        # B2：存量迁移补写（vision.backfill）只校验图片引用，不强制 5 列新表
+        backfill_out = build_out(
+            "out-backfill", dict(iteration_exports), canonical_exports,
+            extra_report={"vision": {"version": 1, "ok": True, "backfill": True,
+                                     "views": [], "issues": []}})
+        write_brief(backfill_out,
+                    "| 1 | right 视角杯柄只剩一条竖线 | handle.radius 0.05 | mean=153-178 |\n")
+        expect("backfill 存量迁移只校验引用、不强制新表格式",
+               not run_checks(backfill_out, min_views=1, vision=False).failed)
+
+        # B9：report 声明 vision 但迭代表没有数据行 -> 必须 ERROR
+        empty_table = build_out(
+            "out-iteration-empty", dict(iteration_exports), canonical_exports,
+            extra_report={"vision": {"version": 1, "ok": True, "views": []}})
+        write_brief(empty_table, "")
+        empty_checker = Checker()
+        check_iteration_records(empty_checker, empty_table,
+                                {"available": True, "views": {"view-front.png": {}}})
+        expect("report 声明 vision 但迭代表为空必须 ERROR", empty_checker.failed)
+
+        # B10：report.vision 逐字段对照（容差内一致 / 超差能被发现）
+        recorded_view = {
+            "subject_ratio": 0.20, "background_ratio": 0.80, "bottom_gap": 0.20,
+            "margins": {"left": 0.20, "right": 0.20, "top": 0.20, "bottom": 0.20},
+            "luminance": {"mean": 100.0, "std": 30.0},
+        }
+        measured_view = {
+            "subject_ratio": 0.21, "background_ratio": 0.79, "bottom_gap": 0.20,
+            "margins": {"left": 0.20, "right": 0.20, "top": 0.20, "bottom": 0.20},
+            "luminance": {"mean": 100.0, "std": 30.0},
+        }
+        expect("视觉指标容差内视为一致", not _vision_mismatches(recorded_view, measured_view))
+        tampered_view = dict(measured_view)
+        tampered_view["margins"] = {"left": 0.30, "right": 0.20,
+                                    "top": 0.20, "bottom": 0.20}
+        expect("margins 偏差超容差能被发现",
+               bool(_vision_mismatches(recorded_view, tampered_view)))
+        tampered_lum = dict(measured_view)
+        tampered_lum["luminance"] = {"mean": 120.0, "std": 30.0}
+        expect("亮度偏差超容差能被发现",
+               bool(_vision_mismatches(recorded_view, tampered_lum)))
 
     if failures:
         print("\nSELFTEST FAILED: %d 项失败" % len(failures))
@@ -631,6 +1124,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Blender 建模输出目录交付闸门")
     parser.add_argument("--out", default=None, help="待检查的输出目录")
     parser.add_argument("--min-views", type=int, default=3, help="至少需要的渲染图张数（默认 3）")
+    parser.add_argument("--no-vision", action="store_true",
+                        help="关闭视觉指标闸门（B 项；Pillow 缺失时本来就会 SKIP）")
     parser.add_argument("--selftest", action="store_true", help="只运行纯函数自测")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出检查结果")
     args = parser.parse_args(argv)
@@ -643,7 +1138,7 @@ def main(argv=None):
         parser.error("--min-views 必须 >= 1（至少要求 1 张渲染图）")
 
     out_dir = os.path.abspath(args.out)
-    checker = run_checks(out_dir, min_views=args.min_views)
+    checker = run_checks(out_dir, min_views=args.min_views, vision=not args.no_vision)
     counts = checker.summary()
 
     if args.json:

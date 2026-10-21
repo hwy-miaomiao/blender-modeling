@@ -7,6 +7,15 @@
 · License：[MIT](LICENSE)
 · 本机实测：Blender 4.0.2 + Windows，CYCLES CPU 预览约 1-2 秒/张
 
+## 什么时候用本项目（以及什么时候不用）
+
+| 你的需求 | 更合适的选择 |
+| --- | --- |
+| 要**可编辑、可复现、可交付**的 `.blend` / `.glb` / `.stl`（没有 GPU 也行），且希望每一步都能重跑 | ✅ 本项目：`model.py` 是唯一真源，参数化重建 + 无头渲染自检 |
+| 只要一个「看起来对」的网格/贴图，不关心拓扑与后续编辑，且有一张参考图或一句描述 | TRELLIS / Hunyuan3D / TripoSR 这类生成模型：质量高但黑盒、要 GPU、结果难以参数化重跑 |
+| 想在 Blender **GUI 里**和 AI 对话式地改模型、边看边调 | `blender-mcp` 一类 MCP 插件：交互体验好；本项目偏「无头批处理 + 交付闸门」 |
+| 要把建模接进 CI / 服务端批量产出，并守住「不许执行危险代码」的边界 | ✅ 本项目 + `scripts/safe_check.py`（SAFE_MODE 静态审查） |
+
 ## 它交付什么
 
 对一句提示词（如「做一个低多边形马克杯，暖色陶土质感」），产出一个目录：
@@ -82,7 +91,7 @@ git clone git@github.com:hwy-miaomiao/blender-modeling.git "$env:USERPROFILE\.ag
 
 - **Blender 4.x**（实测目标 4.0.2）。会自动在 PATH、`BLENDER_EXE` 环境变量、`C:\Program Files\Blender Foundation\` 下查找；也可在命令前设 `$env:BLENDER_EXE="...\blender.exe"`。
 - **Python 3.9+**（系统 Python，跑 `scripts/*.py`；只用标准库）。
-- 可选：**Pillow**（生成联系表 `contact-sheet.png`）。
+- 可选：**Pillow**（生成联系表 `contact-sheet.png`，以及计算 `report.json` 的 `vision` 视觉指标；缺失时这些能力自动 SKIP，不影响建模与交付。注意：缺失 Pillow 时视觉闸门会 SKIP 而不是判定通过；CI 会安装 Pillow 跑真实产物闸门，要求 SKIP 计数为 0。装了 Pillow 后 `check_output` 还会用 sRGB 亮度公式从 PNG 重算 `report.renders[]` 的 `mean/std/black_ratio` 并与记录对照，不一致即 ERROR）。
 - 无需 GPU：默认 CYCLES CPU 渲染，512px 预览每张 1-2 秒。
 
 ## 怎么用
@@ -105,8 +114,13 @@ Copy-Item templates\model_template.py "$OUT\model.py"
 # 2. 执行建模脚本（build 阶段快速暴露 bpy 错误，full 阶段渲染+导出）
 python scripts\run_blender.py --script "$OUT\model.py" --out "$OUT" --stage full
 
-# 3. 交付闸门（0 ERROR 才算过）
+# 3. 交付闸门（0 ERROR 才算过；视觉指标与迭代记录也会一起校验）
 python scripts\check_output.py --out "$OUT"
+# 3.5 可选：单独重算视觉指标并写回 report.json（--stage full 默认已自动算）
+python scripts\vision_metrics.py --out "$OUT" --write
+# 3.6 可选：给通过闸门的版本打快照，并维护 best 基线（可 promote / rollback）
+python scripts\snapshot.py --out "$OUT"          # 新建 history/vN
+python scripts\snapshot.py --out "$OUT" --list   # 看版本表 / 当前 best
 
 # 4. 可选：渲染图拼联系表
 python scripts\contact_sheet.py --out "$OUT"
@@ -132,7 +146,10 @@ python scripts\check_output.py --out "$OUT"
 | `AGENTS.md` | 完整工作规范：阶段 0-9、命令、验收条件、看图自检清单 |
 | `scripts/run_blender.py` | 统一执行器：定位 Blender、注入 kit 路径、超时、日志、错误提取 |
 | `scripts/doctor.py` | 环境体检（`--smoke` 跑端到端冒烟渲染） |
-| `scripts/check_output.py` | 交付闸门（文件/魔数/渲染非全黑/report 统计） |
+| `scripts/check_output.py` | 交付闸门（文件/魔数/渲染非全黑/report 统计/视觉指标/迭代记录/快照结构） |
+| `scripts/vision_metrics.py` | 从渲染图算可量化视觉指标（主体占比/四边留白/着地间隙/亮度分布）并回写 `report.json` |
+| `scripts/snapshot.py` | 迭代版本化：`history/vN` 快照 + `best.json` 基线，支持 `--list` / `--promote` / `--rollback` |
+| `scripts/safe_check.py` | SAFE_MODE 静态审查：model.py 禁止 subprocess/eval/网络/越界写文件，给出 `file:line` 级 ERROR/WARN |
 | `scripts/contact_sheet.py` | 渲染图拼联系表（可选，需要 Pillow） |
 | `scripts/ci_check.py` | 仓库静态检查（frontmatter / 示例产物 / 领域文档结构 / 文档引用 / 绝对路径；无需 Blender） |
 | `lib/blender_kit.py` | 在 Blender 进程内 import 的辅助库（图元/材质/灯光相机/渲染/导出） |
@@ -146,16 +163,23 @@ python scripts\check_output.py --out "$OUT"
 
 ## 自测与 CI
 
-改完脚本或文档后，先跑这两条（纯标准库，不需要 Blender，几秒完成）：
+改完脚本或文档后，先跑这几条（纯标准库，不需要 Blender，几秒完成）：
 
 ```powershell
 python scripts\check_output.py --selftest   # 交付闸门的纯函数自测
+python scripts\vision_metrics.py --selftest # 视觉指标（不需要 Pillow）
+python scripts\snapshot.py --selftest       # 版本快照 / best 基线
+python scripts\safe_check.py --selftest     # SAFE_MODE 静态审查
 python scripts\ci_check.py                  # 仓库静态检查，必须 0 ERROR
-python -m unittest discover -s tests -v     # 单元/契约测试（含 ci_check、check_output、bl_common）
+python -m unittest discover -s tests -v     # 单元/契约测试（含 ci_check、check_output、bl_common、新脚本）
+# 真实产物闸门（需要 Pillow；0 ERROR，且视觉闸门 SKIP 数必须为 0）
+python scripts\check_output.py --out examples\lowpoly-mug
+python scripts\check_output.py --out examples\office-chair
 ```
 
-GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.9 与 3.12 上跑同一套检查，外加 `compileall` 与
-LF 行尾检查；它**不调用 Blender**，真实建模与看图验收在本地按 `AGENTS.md` 第 17 节闸门表完成。
+GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.9 与 3.12 上跑同一套检查，外加 `compileall`、
+LF 行尾检查、`pip install pillow` 与两个 `examples/` 的真实产物视觉闸门（SKIP 计数必须为 0）；
+它**不调用 Blender**，真实建模与看图验收在本地按 `AGENTS.md` 第 17 节闸门表完成。
 改过 `lib/blender_kit.py` 后，本地再跑一次 `tests/kit_regression.blender.py`（见 `tests/README.md`）。
 
 ## 常见问题
@@ -168,9 +192,15 @@ LF 行尾检查；它**不调用 Blender**，真实建模与看图验收在本�
 | Blender stderr 有 `TBBmalloc ... unknown prologue` | 正常噪音，忽略 |
 | 渲染很慢 | 预览用 `--stage render` 或降分辨率/采样数；最终交付再提高质量 |
 | 莫名 `TIMEOUT` / 日志出现 `Could not generate a temp file name` | `run_blender.py` 已把子进程 `TMP`/`TEMP`/`TMPDIR` 隔离到 `<out>/logs/tmp-*`（防 Blender 4.0.2 清空系统临时目录，见 T-23）；手工直接调 `blender.exe` 时需自行设置隔离目录 |
+| 存量项目没有 `report.vision`，check_output 只做旧版宽松校验 | 想启用新量化校验：`python scripts\vision_metrics.py --out "$OUT" --write`；手工补写会写入 `vision.backfill=true`，check_output 对 backfill 只校验迭代记录里的图片引用，不强制新 5 列表格。下次 `--stage full` 自动重算后 backfill 标记消失、严格校验生效 |
+| check_output 报 `report.vision 与实测不一致` | 渲染图被替换/重渲染后 report 过期：重跑 `python scripts\vision_metrics.py --out "$OUT" --write`（原子覆盖） |
+| check_output 报 `report.renders 统计与渲染图不符` | Pillow 可用时会用 sRGB 亮度公式从 PNG 重算 `mean/std/black_ratio`，与 `report.renders[]` 记录不一致（容差 mean/std 1.0、black_ratio 0.01）。说明 report 陈旧或图被替换：重跑 `--stage full` 重新生成 report，不要手改数字；无 Pillow 时该检查自动降级跳过 |
+| `--rollback` 后导出文件与模型不一致 | rollback 只还原 `model.py` / `renders/` / `report.json`，**不还原 `exports/`**；回滚后重跑 `--stage full` 重新导出 |
 
 ## 设计原则
 
 - **两段式**：`--stage build` 只建模，1-2 秒暴露 API 错误；通过后再渲染，避免长时间试错。
 - **可复现**：交付 `model.py` + 参数，任何人可在本机重跑出同一结果。
-- **可验证**：渲染统计（std / black_ratio）与文件魔数由 `check_output.py` 自动把关，防止交付空场景或坏文件。
+- **可验证**：渲染统计（std / black_ratio）、量化视觉指标（主体占比/留白/着地间隙）与文件魔数由 `check_output.py` 自动把关，防止交付空场景或坏文件。
+- **可回溯**：迭代版本进 `history/vN`，`best.json` 记录通过闸门的基线；改坏了 `--rollback` 还原 `model.py` / `renders/` / `report.json`（不还原 `exports/`，回滚后需重跑 `--stage full` 重新导出）。
+- **可审查**：`safe_check.py` 用 AST 静态审查 `model.py`，subprocess / eval / 网络 / `shutil` 拷贝 / 绝对路径与变量路径写文件（含 `Path.open`）在入库前就被拦下。

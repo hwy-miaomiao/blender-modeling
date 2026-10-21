@@ -287,7 +287,7 @@ def _list_artifacts(out_dir):
 
 
 def execute(script, out_dir, stage="full", timeout=600, label=None,
-            extra_args=None, blender=None, quiet=False):
+            extra_args=None, blender=None, quiet=False, vision=False):
     """以 headless 方式执行一个建模脚本。
 
     参数：
@@ -298,9 +298,11 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
         label      日志文件名前缀，缺省用 stage
         extra_args 追加到 `--` 之后的参数
         blender    显式指定 Blender 可执行文件
+        vision     阶段 full 成功后把视觉指标写入 report.json 的 vision 字段
+                   （Pillow 可选；缺失时静默跳过，不影响成功判定）
 
     返回 dict：ok/exit_code/stage/script/out/blender/blender_version/log/
-               duration_s/errors/warnings/renders/exports
+               duration_s/errors/warnings/renders/exports/vision
     """
     script = os.path.abspath(script)
     out_dir = os.path.abspath(out_dir)
@@ -319,6 +321,7 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
         "warnings": [],
         "renders": [],
         "exports": [],
+        "vision": None,
     }
 
     if not os.path.isfile(script):
@@ -457,8 +460,47 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
         "renders": artifacts["renders"],
         "exports": artifacts["exports"],
     })
+    if vision and stage == "full" and result["ok"]:
+        result["vision"] = _attach_vision_metrics(out_dir, result["warnings"], quiet)
     _print_result(result, quiet)
     return result
+
+
+def _load_vision_metrics():
+    """惰性导入同目录的 vision_metrics（Pillow 可选，失败返回 None）。"""
+    try:
+        import vision_metrics
+        return vision_metrics
+    except Exception:
+        try:
+            import importlib.util
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "vision_metrics.py")
+            spec = importlib.util.spec_from_file_location("vision_metrics", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:
+            return None
+
+
+def _attach_vision_metrics(out_dir, warnings, quiet=False):
+    """full 成功后把视觉指标写入 report.json 的 vision 字段（B 项）。"""
+    module = _load_vision_metrics()
+    if module is None:
+        warnings.append("视觉指标跳过：vision_metrics.py 不可导入")
+        return {"attached": False, "reason": "vision_metrics.py 不可导入"}
+    try:
+        attached = module.attach_to_report(out_dir, backfill=False)
+    except Exception as exc:  # 视觉指标是增强项，不能拖垮建模成功判定
+        attached = {"attached": False, "reason": "视觉指标附加失败: %r" % (exc,)}
+    if not attached.get("attached"):
+        warnings.append("视觉指标未写入 report: %s" % attached.get("reason"))
+    elif not quiet:
+        print("[run_blender] vision: views=%s ok=%s errors=%s warnings=%s"
+              % (attached.get("views"), attached.get("ok"),
+                 attached.get("errors"), attached.get("warnings")))
+    return attached
 
 
 def _print_result(result, quiet=False):

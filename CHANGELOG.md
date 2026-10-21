@@ -13,6 +13,28 @@
 - `scripts/ci_check.py` 新增领域技巧文档检查：10 节结构齐全、python 代码块可编译、无盘符绝对路径。
 - SKILL.md 参考表、AGENTS.md 第 16 节索引与第 5 节拆解指引、README 目录结构加入四篇领域文档入口。
 - `docs/previews/`：建筑/人物/动物/植物四张效果预览图（各由两个代表题材的 960×960 实测终渲拼合），README「效果预览」与四篇领域文档顶部均已嵌入；`scripts/ci_check.py` 新增预览图检查（存在性、PNG 魔数、尺寸与体积下限、README 与领域文档双向引用）。
+- `scripts/vision_metrics.py`：视觉自检量化（无需 GPU、Pillow 可选）——对 `renders/view-*.png` 做四角种子 + 梯度受限背景 flood、取最大连通域，输出主体占比、四边留白、底部留白、亮度分位；`VISION001`-`VISION007` 阈值常量与 `--selftest`；无 Pillow 时自动跳过。`run_blender.py --stage full` 成功后自动把 `vision` 写入 `report.json`（`--no-vision` 可关）。
+- `scripts/snapshot.py`：迭代版本化（竞品 commit gate 思路）——`--list` 看 `history/vN`、`--promote`/`--rollback` 回退最佳版本，`best.json` 记录 schema/渲染图/面数/`model.py` sha256；结构不合法只 WARN，不阻塞交付。
+- `scripts/safe_check.py`：SAFE_MODE 静态审查——AST 检查 `model.py`/模板是否出现 `subprocess`、`os.system`、`eval`/`exec`、网络库、`__import__`、绝对路径或 `..` 写文件与魔术属性；按 `file:line` 输出 SAFE001-SAFE009，`--selftest` 有 13 个用例；`ci_check.py` 默认审 `templates/` 与 `examples/*/model.py`。
+- `check_output.py` 新增三组结构检查：视觉指标闸门（`--no-vision` 可关，Pillow 缺失自动 SKIP）、brief 迭代记录校验（引用的渲染图必须存在；`report` 含 `vision` 时要求每轮写图名+量化值）、`history/best.json` 结构一致性（只 WARN）。
+- 测试：新增 `tests/test_vision_metrics.py`、`tests/test_snapshot.py`、`tests/test_safe_check.py`（+27 用例，视觉与快照测试用临时目录与假 PNG，不依赖 Blender/Pillow）；`ci_check.py` REQUIRED_FILES 与 CI 工作流同步新增三个 `--selftest` 步骤。
+- 文档：README 新增「什么时候用本项目（以及什么时候不用）」分工表（vs TRELLIS/Hunyuan3D、blender-mcp）与三个新脚本命令；AGENTS 铁律 0.3 扩为七条（新增 SAFE_MODE）、§9 迭代记录改为「看了哪张图 + 量化值」5 列、§11 闸门表与 §14 清单接入 `report.vision`、§17 新增视觉/SAFE_MODE/快照三道闸门；SKILL 铁律与最小工作流同步。
+
+### 修复
+
+- **视觉闸门不再把「无法判定」当通过**：`vision_metrics.analyze_out` 在 `renders/` 非空但所有 PNG 都无法解码时新增 `VISION008` ERROR（伪造/损坏图不再落入 skipped 后 SKIP）；`check_output.check_vision` 对这种情况直接判 ERROR，退出码 1。
+- **存量项目迁移（backfill）**：`vision_metrics.py --write` 手工补写 `report.vision` 时写入 `backfill: true` 与 `backfilled_at`；`check_output.check_iteration_records` 对 backfill 只校验迭代记录里的图片引用、不强制新 5 列表格；`run_blender.py --stage full` 自动重算的 vision 不带 backfill 标记，严格校验随即生效。AGENTS §9 与 README 常见问题补充迁移说明。
+- **`safe_check.py` 路径写文件加固**：`Path.open` / `Path.write_text` 的接收者路径纳入检查；变量路径写文件从 WARN 升为 `SAFE006` ERROR；新增盘符相对路径（`C:evil.txt`，`SAFE003`）与 `shutil.copyfile/copy/copy2/copytree`（`SAFE002`）；写文件白名单改为「目录前缀」语义，`data/report.json` 等借 basename 的绕过不再放行；`%TEMP%` / `tempfile.gettempdir()` 等输出目录表达式继续放行。
+- **`snapshot.py --json` 输出纯 JSON**：`--list` / 创建 / promote / rollback 的人读日志改走 stderr，stdout 只输出可 `json.loads` 的 JSON。
+- **`vision_metrics.py --write` 原子覆盖**：先写同目录 `.tmp` 再 `os.replace`，替换失败时保留原 `report.json` 并清理临时文件。
+- **`report.vision` 全字段一致性**：`check_output` 逐字段对照主体/背景占比、四边留白、底部留白与亮度 mean/std（容差 0.02 / 2.0），不一致从 WARN 升为 ERROR；并校验 `report.vision.ok` 与实测一致（WARN）。
+- **空迭代记录**：`report.json` 含（非 backfill）`vision` 但 brief「## 迭代记录」没有任何数据行时，`check_output` 报 ERROR（新产物至少记录 1 轮），不再 vacuous PASS。
+- **CI 覆盖真实产物**：工作流安装 Pillow 并跑两个 `examples/` 的 `check_output.py`，用 `grep "视觉指标: SKIP"` 兜底（SKIP 计数必须为 0）；`ci_check.check_ci_workflow` 同步要求这些步骤关键字。
+- **文档**：README 常见问题与设计原则、AGENTS §0.3 铁律 7 / §9 迁移与快照说明 / §11 ERROR 表 / §14 清单 / §17 闸门表补 `VISION008`、`SAFE006` 变量路径、`shutil` 拷贝与 `--rollback` 不还原 `exports/` 的说明；SKILL 铁律 4 与小工作流同步。
+- 测试：新增 `tests/test_check_output_vision.py`（真实 PNG、backfill、空迭代表、篡改指标、坏 PNG 阻断 7 用例）；`test_bl_common.py` 增 vision attach / execute 分支 / `--no-vision` 5 用例；`test_vision_metrics.py` 增 VISION008、backfill、原子写用例；`test_safe_check.py` 增 Path.open/变量路径/shutil/盘符相对/`--json` 纯度等 9 用例；`ci_check.py` REQUIRED_FILES 与 CI 步骤关键字同步。
+- **第二轮验证 B10 残留：`report.renders` 统计也从渲染图重算对照**：`check_output` 在 Pillow 可用时用与 kit 相同的 sRGB 亮度公式（`lum = 0.2126R + 0.7152G + 0.0722B`、alpha≤2 忽略、总体 std、`black_ratio = lum<8` 占比）从 PNG 重算 `mean/std/black_ratio`，与 `report.json.renders[]` 记录对照（容差 mean/std 1.0、`black_ratio` 0.01），不一致报 ERROR「report.renders 统计与渲染图不符」；Pillow 缺失或解码失败静默降级（不误报）。`tests/test_check_output_vision.py` 增篡改 std / black_ratio 的反例。
+- **第二轮验证 R2-B1：无 Pillow 环境测试契约**：`tests/test_vision_metrics.py` 的 `test_undecodable_png_is_error_not_skip` 改用 `@unittest.skipUnless(vm.pillow_available(), ...)` 跳过，与 `tests/README.md`「Pillow 用例自动跳过」一致；无 Pillow 的 Python 3.9.13 环境整份 `unittest discover` 全绿（20 skip）。
+- **第三轮验证 R3-B1：部分渲染图损坏不再降级为 WARN**：`check_output.check_vision` 把 `skipped` 从 WARN 升为 `VISION009` ERROR，错误信息列出无法解码的文件名/张数（`全部无法解码` 的 `VISION008` 也补上文件名）；Pillow 缺失仍 SKIP 降级，`--no-vision` 仍可整体关闭视觉闸门。`tests/test_check_output_vision.py` 增「好图+坏图混合 → ERROR」用例，`check_output --selftest` 增桩测试（共 40 项）；AGENTS §11/§14/§17 与 `tests/README.md` 同步。
 
 ## [1.1.1] - 2026-10-21
 
