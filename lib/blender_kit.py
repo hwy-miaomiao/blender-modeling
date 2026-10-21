@@ -34,7 +34,7 @@ import time
 
 from mathutils import Vector, Euler
 
-KIT_VERSION = "1.1.0"
+KIT_VERSION = "1.1.1"
 
 # 渲染统计 / 导出记录 / 警告等运行时状态；save_report() 会汇总它们
 _STATE = {
@@ -655,7 +655,10 @@ def _camera_tan_half_fov(camera):
         tan_x = sensor / (2.0 * lens)
         tan_y = tan_x / aspect
     elif fit == 'VERTICAL':
-        tan_y = sensor / (2.0 * lens)
+        # sensor_fit=VERTICAL 时纵向视角由 sensor_height 决定（Blender 语义）；
+        # 误用 sensor_width 会把纵向 FOV 算大 36/24 倍，导致相机摆得太近、画面纵向裁切。
+        sensor_y = float(getattr(data, "sensor_height", 24.0) or 24.0)
+        tan_y = sensor_y / (2.0 * lens)
         tan_x = tan_y * aspect
     else:  # AUTO：sensor_width 作用在较长边
         if aspect >= 1.0:
@@ -1933,6 +1936,15 @@ def render_still(path, camera=None, label=None):
         _warn("render_still: 场景没有相机，自动创建一台")
         add_camera()
         created = True
+    # 渲染输出路径/格式是场景状态：render_still 结束后必须还原，
+    # 否则后续手工渲染会被悄悄改写（CHANGELOG「渲染设置泄漏」口径）。
+    old_filepath = None
+    old_format = None
+    try:
+        old_filepath = sc.render.filepath
+        old_format = sc.render.image_settings.file_format
+    except Exception:
+        pass
     try:
         try:
             sc.render.image_settings.file_format = 'PNG'
@@ -1946,6 +1958,13 @@ def render_still(path, camera=None, label=None):
         try:
             if not created:
                 sc.camera = old_cam
+        except Exception:
+            pass
+        try:
+            if old_filepath is not None:
+                sc.render.filepath = old_filepath
+            if old_format is not None:
+                sc.render.image_settings.file_format = old_format
         except Exception:
             pass
     final = absp
@@ -1965,15 +1984,51 @@ def render_still(path, camera=None, label=None):
                                   "mean", "std", "black_ratio", "label")}
 
 
+def _current_render_samples():
+    """返回当前场景渲染引擎对应的采样数（供部分覆盖时继承未指定的参数）。"""
+    sc = _scene()
+    engine = str(getattr(sc.render, "engine", ""))
+    if engine == 'CYCLES':
+        try:
+            return max(1, int(sc.cycles.samples))
+        except Exception:
+            return 48
+    eevee = getattr(sc, "eevee", None)
+    if eevee is not None:
+        try:
+            return max(1, int(eevee.taa_render_samples))
+        except Exception:
+            return 64
+    return 48
+
+
 def _maybe_reconfigure_render(engine=None, samples=None, resolution=None):
-    """按需用 setup_render 覆盖渲染参数（缺省沿用上次 setup_render 的值）。"""
+    """按需用 setup_render 只覆盖显式传入的参数。
+
+    未指定的 engine/samples/resolution 继承「当前场景」的值（而不是硬编码默认）：
+    否则手工把场景设成 EEVEE 后调用 render_views(samples=...) 会被静默切回 CYCLES。
+    """
     if engine is None and samples is None and resolution is None:
         return None
+    sc = _scene()
     cur = dict(_STATE.get("render_setup") or {})
+    if engine is not None:
+        engine_value = engine
+    else:
+        engine_value = str(getattr(sc.render, "engine", "CYCLES"))
+    if samples is not None:
+        samples_value = int(samples)
+    else:
+        samples_value = _current_render_samples()
+    if resolution is not None:
+        resolution_value = tuple(resolution)
+    else:
+        resolution_value = (int(getattr(sc.render, "resolution_x", 960)),
+                            int(getattr(sc.render, "resolution_y", 960)))
     return setup_render(
-        engine=engine if engine is not None else (cur.get("engine_requested") or "CYCLES"),
-        samples=int(samples if samples is not None else cur.get("samples", 48)),
-        resolution=tuple(resolution if resolution is not None else cur.get("resolution", (960, 960))),
+        engine=engine_value,
+        samples=samples_value,
+        resolution=resolution_value,
         transparent=bool(cur.get("transparent", False)),
         denoise=bool(cur.get("denoise", True)),
         film_exposure=float(cur.get("film_exposure", 1.0)),
@@ -2187,6 +2242,18 @@ def render_views(out_dir, prefix="view", views=("front", "right", "iso"), camera
     """
     out_dir = os.path.abspath(os.fspath(out_dir))
     os.makedirs(out_dir, exist_ok=True)
+    # views 归一化：允许传单个字符串（明确拒绝按字符串逐字符迭代）；
+    # 空列表/空字符串明确告警，避免「静默什么都没渲染」。
+    if isinstance(views, str):
+        views = (views,)
+    try:
+        views = tuple(str(v).strip().lower() for v in views if str(v).strip())
+    except TypeError:
+        _warn("render_views: views 必须是字符串或字符串序列: %r" % (views,))
+        return []
+    if not views:
+        _warn("render_views: 没有指定任何视角（views 为空），不渲染")
+        return []
     old_setup = dict(_STATE.get("render_setup") or {})
     raw_state = _snapshot_render_state()
     _maybe_reconfigure_render(engine, samples, resolution)

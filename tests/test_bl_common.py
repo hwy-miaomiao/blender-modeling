@@ -124,5 +124,75 @@ class ExecuteWarningsTests(unittest.TestCase):
             self.assertNotIn("\\", log_name)
 
 
+class ExecuteTempIsolationTests(unittest.TestCase):
+    """execute() 必须给 Blender 子进程隔离 TMP/TEMP/TMPDIR。
+
+    背景：Blender 4.0.2 在 session 临时子目录创建失败时会把 session 目录退化成
+    基目录并在退出时递归清空它（上游 #139585 / commit 87c4f47）。若不隔离，
+    基目录可能就是系统 %TEMP%，会被直接清空。
+    """
+
+    def _make_script(self, tmp):
+        script = os.path.join(tmp, "model.py")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write("print('noop')\n")
+        return script
+
+    def _patched_version(self):
+        return mock.patch.object(
+            bl_common, "blender_version",
+            return_value={"ok": True, "version": "4.0.2", "tuple": (4, 0, 2)})
+
+    def test_child_env_isolates_temp_dir_and_cleans_up(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            env = kwargs.get("env") or {}
+            captured["env"] = dict(env)
+            captured["temp_dir"] = env.get("TEMP")
+            captured["exists_during_run"] = os.path.isdir(env.get("TEMP") or "")
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=b"Blender 4.0.2\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = self._make_script(tmp)
+            out_dir = os.path.join(tmp, "out")
+            with self._patched_version(), mock.patch.object(
+                    bl_common.subprocess, "run", side_effect=fake_run):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = bl_common.execute(
+                        script, out_dir, stage="build", timeout=5,
+                        label="temp iso", blender=sys.executable, quiet=True)
+
+        self.assertTrue(result["ok"], result["errors"])
+        env = captured["env"]
+        self.assertTrue(captured["exists_during_run"],
+                        "隔离临时目录在运行期间必须存在: %r" % (captured,))
+        self.assertEqual(env.get("TMP"), captured["temp_dir"])
+        self.assertEqual(env.get("TMPDIR"), captured["temp_dir"])
+        self.assertNotEqual(env.get("TEMP"), os.environ.get("TEMP"),
+                            "子进程 TEMP 不能等于宿主 TEMP")
+        self.assertEqual(os.path.dirname(captured["temp_dir"]),
+                         os.path.join(out_dir, "logs"))
+        self.assertFalse(os.path.exists(captured["temp_dir"]),
+                         "隔离临时目录应在执行结束后清理")
+
+    def test_mkdtemp_failure_degrades_with_warning(self):
+        fake = subprocess.CompletedProcess(args=[], returncode=0,
+                                           stdout=b"Blender 4.0.2\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = self._make_script(tmp)
+            with self._patched_version(), mock.patch.object(
+                    bl_common.tempfile, "mkdtemp", side_effect=OSError("boom")), \
+                    mock.patch.object(bl_common.subprocess, "run", return_value=fake):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = bl_common.execute(
+                        script, os.path.join(tmp, "out"), stage="build",
+                        timeout=5, blender=sys.executable, quiet=True)
+        self.assertTrue(result["ok"], result["errors"])
+        self.assertTrue(any("临时目录" in w for w in result["warnings"]),
+                        result["warnings"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

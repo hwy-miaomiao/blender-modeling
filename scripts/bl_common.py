@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -365,6 +366,18 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
     log_path = os.path.join(out_dir, "logs", log_name)
     result["log"] = log_path
 
+    # ENV-01：给 Blender 子进程隔离临时目录（TMP/TEMP/TMPDIR）。
+    # Blender 4.0.2 在无法创建 session 临时子目录时会把 session 目录退化为基目录，
+    # 并在退出时递归清空它（上游 #139585，commit 87c4f47）；基目录若是系统 %TEMP%
+    # 就会直接清空系统临时目录，还会把超时误判成脚本问题。隔离后即使触发该缺陷，
+    # 被清理的也只是 <out>/logs 下这个一次性目录。
+    temp_dir = None
+    try:
+        temp_dir = tempfile.mkdtemp(prefix="tmp-", dir=os.path.join(out_dir, "logs"))
+    except OSError as exc:
+        result["warnings"].append(
+            "无法创建隔离临时目录，Blender 将沿用系统临时目录（有被清空风险）: %s" % exc)
+
     cmd = [exe, "-b", "--factory-startup", "-noaudio",
            "--python-exit-code", "1", "--python", script]
     if extra_args:
@@ -376,6 +389,9 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
     env["BLENDER_OUT_DIR"] = out_dir
     env["BLENDER_STAGE"] = stage
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    if temp_dir:
+        for key in ("TMP", "TEMP", "TMPDIR"):
+            env[key] = temp_dir
 
     started = time.time()
     timed_out = False
@@ -403,6 +419,10 @@ def execute(script, out_dir, stage="full", timeout=600, label=None,
         result["errors"] = ["启动 Blender 失败: %s" % exc]
         _print_result(result, quiet)
         return result
+    finally:
+        # 隔离临时目录是一次性的：无论成功、超时还是启动失败都清理掉。
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     duration = round(time.time() - started, 2)
 

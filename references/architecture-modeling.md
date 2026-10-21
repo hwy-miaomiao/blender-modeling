@@ -420,7 +420,7 @@ def build_street():
 | 10 | `report.json` 尺寸失真：拱石组对象 dims 7.4×4.0×12.4、场景报高 11.077，真实顶点包围盒只有 6.539 | `world_bbox`/`scene_report` 用 `bound_box` 的 8 角点，**旋转过的 join 组会被放大** | 别用 `report.dimensions` 校验旋转件；量真实尺寸遍历顶点（`.tmp\domain\arch\inspect_bbox.py`）；join 选未旋转对象作 active 或 join 后 `apply_transform` |
 | 11 | 贴地失败：`report.bbox_min[2] = -0.069`（拱石底角沉到地下）；70° 楔块探针 bbox_min=-0.418 | 楔块绕自身中心旋转后外角下沉；布尔把底面切掉 | 起拱角 `acos(-cz/R)` 保证起拱点 z=0，或整组抬 0.05-0.08；验收 bbox_min ≥ -0.005 |
 | 12 | 立面异常：窗框交角黑点；桥台端面与拱墙端面之间竖向黑缝 | 四根窗框互搭（满宽/满高）在交角互插自阴影；两端面完全共面 → z-fighting | 窗框对接（左右框高 `h-2F`）；相接构件错开/嵌入 0.02-0.05，禁止完全共面 |
-| 13 | 终渲自定义机位出 512×512（`final-hero.png` 265KB，正常 960 图 800KB+） | `render_views` 结束恢复渲染设置，`render_still` 沿用旧设置 | 终渲 `render_still` 前再 `setup_render(samples=48, resolution=(960,960))` |
+| 13 | 终渲自定义机位出 512×512（`final-hero.png` 265KB，正常 960 图 800KB+） | `render_views` 结束会恢复调用前的渲染设置，`render_still` 结束也会恢复原设置（1.1.1 起含 filepath/格式）——两者都不会把预览档（512/16）自动提升为终渲档 | 终渲 `render_still` 前再 `setup_render(samples=48, resolution=(960,960))` |
 | 14 | `exports/` 多出 `model.blend1`（597KB 备份） | 同目录重复 `save_blend` 时 Blender 自动备份 | 交付前清空 exports 再跑 full，或在文件清单注明忽略 `.blend1` |
 | 15 | 同一场景单张 512 预览从 1.9s 涨到 13.2s、960 终渲 26-82s/张 | 多任务并发抢 CPU（本机同时多个 Blender） | 别据此判断「模型变重」；看 logs 每张实际耗时，必要时错峰 |
 | 16 | 日志里 `[kit][WARN]` 中文全部乱码 | Windows 控制台/日志 GBK 与 UTF-8 不一致 | 不影响逻辑；按英文关键字检索或看 `BM_RESULT.warnings` |

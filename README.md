@@ -167,6 +167,7 @@ LF 行尾检查；它**不调用 Blender**，真实建模与看图验收在本�
 | `Traceback` 连续出现 | 读 `run_blender.py` 输出里的 ERROR 行与日志尾部，按 `references/troubleshooting.md` 修 |
 | Blender stderr 有 `TBBmalloc ... unknown prologue` | 正常噪音，忽略 |
 | 渲染很慢 | 预览用 `--stage render` 或降分辨率/采样数；最终交付再提高质量 |
+| 莫名 `TIMEOUT` / 日志出现 `Could not generate a temp file name` | `run_blender.py` 已把子进程 `TMP`/`TEMP`/`TMPDIR` 隔离到 `<out>/logs/tmp-*`（防 Blender 4.0.2 清空系统临时目录，见 T-23）；手工直接调 `blender.exe` 时需自行设置隔离目录 |
 
 ## 设计原则
 

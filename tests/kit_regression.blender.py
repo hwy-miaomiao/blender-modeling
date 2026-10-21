@@ -408,6 +408,98 @@ check("F19 assign 默认只替换第一个材质槽",
       len(_slots2) >= 2 and _slots2[0] == _green and _slots2[1] == _new,
       [getattr(m, "name", "?") for m in _slots2])
 
+# ---------- F20 render_views(views=字符串) 不能被逐字符迭代 ----------
+_RENDERS_DIR = os.path.join(OUT_DIR, "renders")
+kit.reset_scene()
+kit.cube("f20_obj", size=1.0)
+kit.render_views(_RENDERS_DIR, prefix="f20", views="front",
+                 engine="CYCLES", samples=1, resolution=(64, 64))
+_names20 = sorted(n for n in os.listdir(_RENDERS_DIR) if n.startswith("f20-"))
+check("F20 render_views(views='front') 只渲染 front 一张",
+      _names20 == ["f20-front.png"], _names20)
+
+# ---------- F21 render_views(views=[]) 必须明确告警，不能静默无输出 ----------
+_before21 = len(kit._STATE["warnings"])
+_results21 = kit.render_views(_RENDERS_DIR, prefix="f21", views=[],
+                              engine="CYCLES", samples=1, resolution=(64, 64))
+check("F21 render_views(views=[]) 返回空列表", _results21 == [], _results21)
+check("F21 render_views(views=[]) 记录告警",
+      len(kit._STATE["warnings"]) > _before21,
+      kit._STATE["warnings"][_before21:])
+
+# ---------- F22 render_still 结束后恢复 render.filepath / 图片格式 ----------
+kit.reset_scene()
+kit.setup_scene(floor=False)
+_sc22 = bpy.context.scene
+kit.setup_render(engine="CYCLES", samples=1, resolution=(64, 64))
+_sc22.render.filepath = "//f22-original"
+_sc22.render.image_settings.file_format = 'JPEG'
+kit.render_still(os.path.join(_RENDERS_DIR, "f22.png"), label="f22")
+check("F22 render_still 恢复 render.filepath",
+      _sc22.render.filepath == "//f22-original", _sc22.render.filepath)
+check("F22 render_still 恢复 image_settings.file_format",
+      _sc22.render.image_settings.file_format == 'JPEG',
+      _sc22.render.image_settings.file_format)
+
+# ---------- F23 PERSP + sensor_fit=VERTICAL 取景不能纵向裁切 ----------
+kit.reset_scene()
+_f23_obj = kit.cube("f23_obj", size=2.0, location=(0, 0, 1.0))
+_sc23 = bpy.context.scene
+_sc23.render.resolution_x = 200
+_sc23.render.resolution_y = 100
+_sc23.render.resolution_percentage = 100
+_f23_cam = kit.add_camera(location=(4, -4, 3))
+_f23_cam.data.type = 'PERSP'
+_f23_cam.data.sensor_fit = 'VERTICAL'
+_f23_cam.data.sensor_width = 36.0
+_f23_cam.data.sensor_height = 24.0
+_f23_cam.data.lens = 50.0
+kit.fit_camera(_f23_cam, [_f23_obj], margin=1.1)
+_coords23 = []
+for _corner in _f23_obj.bound_box:
+    _world = _f23_obj.matrix_world @ __import__("mathutils").Vector(_corner)
+    _coords23.append(world_to_camera_view(_sc23, _f23_cam, _world))
+check("F23 PERSP VERTICAL 取景全部角点在画面内",
+      all(-0.001 <= c.x <= 1.001 and -0.001 <= c.y <= 1.001 for c in _coords23),
+      [(round(c.x, 3), round(c.y, 3)) for c in _coords23])
+
+# ---------- F24 部分覆盖不能把未指定的引擎重置为 CYCLES ----------
+kit.reset_scene()
+kit.cube("f24_obj", size=1.0)
+_sc24 = bpy.context.scene
+_sc24.render.engine = 'BLENDER_EEVEE'
+_sc24.render.resolution_x = 64
+_sc24.render.resolution_y = 64
+_old_setup24 = dict(kit._STATE.get("render_setup") or {})
+kit._STATE["render_setup"] = {}
+try:
+    _info24 = kit._maybe_reconfigure_render(samples=2)
+finally:
+    kit._STATE["render_setup"] = _old_setup24
+check("F24 部分覆盖保持当前 EEVEE 引擎",
+      bool(_info24) and str(_info24.get("engine")) == 'BLENDER_EEVEE', _info24)
+check("F24 部分覆盖应用显式 samples",
+      bool(_info24) and int(_info24.get("samples")) == 2, _info24)
+
+# ---------- F25 sensor_fit=AUTO 横/竖幅取景回归 ----------
+for _tag25, _rx25, _ry25 in (("横幅", 200, 100), ("竖幅", 100, 200)):
+    kit.reset_scene()
+    _obj25 = kit.cube("f25_obj", size=2.0, location=(0, 0, 1.0))
+    _sc25 = bpy.context.scene
+    _sc25.render.resolution_x = _rx25
+    _sc25.render.resolution_y = _ry25
+    _sc25.render.resolution_percentage = 100
+    _cam25 = kit.add_camera(location=(4, -4, 3))
+    _cam25.data.sensor_fit = 'AUTO'
+    kit.fit_camera(_cam25, [_obj25], margin=1.1)
+    _coords25 = []
+    for _corner in _obj25.bound_box:
+        _world = _obj25.matrix_world @ __import__("mathutils").Vector(_corner)
+        _coords25.append(world_to_camera_view(_sc25, _cam25, _world))
+    check("F25 AUTO %s取景全部角点在画面内" % _tag25,
+          all(-0.001 <= c.x <= 1.001 and -0.001 <= c.y <= 1.001 for c in _coords25),
+          [(round(c.x, 3), round(c.y, 3)) for c in _coords25])
+
 print("")
 if _failures:
     print("KIT REGRESSION FAILED: %d/%d 项未通过 -> %r" % (len(_failures), _checks[0], _failures))

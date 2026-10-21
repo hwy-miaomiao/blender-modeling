@@ -220,6 +220,15 @@ def _render_preview():
     """渲染 512x512 预览三视角 -> renders/view-<view>.png。"""
     cfg = PARAMS["render"]["preview"]
     size = int(cfg["resolution"])
+    # render_views 没有 denoise 形参：先把 preview.denoise 写入场景渲染设置，
+    # render_views 覆盖 engine/samples/resolution 时会沿用这里的 denoise。
+    # （否则 PARAMS 里的 preview.denoise 是死参数：设 False 不生效。）
+    setup_render(
+        engine=PARAMS["render"]["engine"],
+        samples=int(cfg["samples"]),
+        resolution=(size, size),
+        denoise=bool(cfg.get("denoise", True)),
+    )
     return render_views(
         RENDERS_DIR,
         prefix="view",

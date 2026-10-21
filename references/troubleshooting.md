@@ -227,6 +227,13 @@ bm.to_mesh(obj.data); bm.free()
 - **解决**：`mat()` 的 RGB 用 0-1；每个对象 `assign(obj, m)` 或 `assign_all(objects, m)`；金属件补环境/灯光（T-8）。
 - **验证**：`scene_report()["materials"]` 列出预期材质；预览图中至少两种颜色可区分。
 
+### T-23 run_blender 已隔离子进程临时目录（防 Blender 4.0.2 清空 %TEMP%）
+
+- **症状**：【实测】`run_blender.py` 莫名超时（420 s / 600 s 仍未结束），日志出现 `WARN (bke.appdir): ... tempdir_session_create: Could not generate a temp file name for '...\blender_XXXXXX', falling back to '<系统临时目录>\'`，随后大量 `Unable to delete file`；极端情况下系统 `%TEMP%` 被递归清空。
+- **原因**：Blender 4.0.2 在无法创建 session 临时子目录时，把**基目录本身**当成 session 目录，退出时 `BKE_tempdir_session_purge()` 递归删除它。基目录若来自 `TMP`/`TEMP`，就等于递归清理系统临时目录（上游 #139585，2025-08 的 commit 87c4f47 才修；4.0.2 属未修复的老行为）。出现该缺陷时进程会卡在清理阶段，看起来像脚本超时。
+- **解决**：`run_blender.py` 自 1.1.1 起（`bl_common.execute`）把 Blender 子进程的 `TMP`/`TEMP`/`TMPDIR` 指向 `<out>/logs/tmp-*`，运行结束就删除；即使触发缺陷，被清空的也只是这个一次性目录。手工直接调 `blender.exe` 时，自己设 `$env:TMP`/`$env:TEMP` 到专用临时目录。
+- **验证**：日志里没有 `falling back`；`<out>/logs` 运行后只剩 `*.log`（没有 `tmp-*` 残留）；`BM_RESULT.ok:true` 且 `duration_s` 正常。
+
 ## F. 快速排查顺序（照着走）
 
 1. `BM_RESULT.ok` 是否为 true？`errors` 里第一条是什么？

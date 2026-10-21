@@ -14,6 +14,26 @@
 - SKILL.md 参考表、AGENTS.md 第 16 节索引与第 5 节拆解指引、README 目录结构加入四篇领域文档入口。
 - `docs/previews/`：建筑/人物/动物/植物四张效果预览图（各由两个代表题材的 960×960 实测终渲拼合），README「效果预览」与四篇领域文档顶部均已嵌入；`scripts/ci_check.py` 新增预览图检查（存在性、PNG 魔数、尺寸与体积下限、README 与领域文档双向引用）。
 
+## [1.1.1] - 2026-10-21
+
+第 8 轮深度审计后的修复版本，重点是渲染取景与渲染状态恢复的边界行为，以及 Blender 子进程临时目录隔离。
+
+### 修复
+
+- **`render_views(views=...)` 边界**：传单个字符串（如 `views="front"`）不再被逐字符迭代成 5 个未知视角、全部写成 `view-iso.png`；空 `views` 现在给出 WARN 并返回空列表，不再静默无输出。
+- **`sensor_fit="VERTICAL"` 取景裁切**：`fit_camera` 计算 PERSP 纵向视角时改用 `sensor_height`（此前误用 `sensor_width`，纵向 FOV 被算大 1.5 倍，相机会摆得太近、画面纵向裁切）；`AUTO`/`HORIZONTAL` 行为不变。
+- **渲染设置泄漏（续）**：`render_still` 结束后恢复 `scene.render.filepath` 与 `image_settings.file_format`（此前只恢复 `scene.camera`，单独调用会污染后续手工渲染）。
+- **部分覆盖渲染参数**：`render_views` / `render_turntable` 只传 `samples`（或 `engine`/`resolution` 之一）时，未指定的参数继承当前场景值，不再硬编码回退 `CYCLES`/48/960（此前手工设成 EEVEE 的场景会被静默切回 CYCLES）。
+- **Blender 子进程临时目录隔离**：`run_blender.py`（经 `bl_common.execute`）把 Blender 子进程的 `TMP`/`TEMP`/`TMPDIR` 指向 `<out>/logs/tmp-*`，结束后清理。Blender 4.0.2 在 session 临时子目录创建失败时会把基目录当 session 目录、退出时递归清空它——此前基目录是系统 `%TEMP%`，可能清空系统临时目录并表现为莫名的 `TIMEOUT`（上游 2025-08 才修复，见 #139585）。
+- **`check_output.py` 导出候选定位**：规范名候选改回 `exports/model.<ext>`（此前拼成 `exports/blend`），`exports/` 里排序靠前的损坏文件不再遮蔽合法的 `exports/model.blend`（假「魔数不对」）；report 缺导出记录时改为报「report 缺少 blend/glb 导出记录」，不再误报「相对路径: None」。宽松的 exports 目录扫描能力保留。
+- **模板 `preview.denoise`**：`templates/model_template.py` 的 `PARAMS.render.preview.denoise` 现在真正生效（此前是死参数，设 `False` 不关降噪）。
+
+### 测试
+
+- `tests/kit_regression.blender.py` 53 → 63 项（新增 F20–F25：views 字符串/空列表、`render_still` 状态恢复、VERTICAL/AUTO 取景角点、部分覆盖保持引擎）。
+- `scripts/check_output.py --selftest` 新增 4 项（规范名不被同目录损坏文件遮蔽、缺导出记录文案、不误报相对路径、非规范文件名仍能被 exports 扫描定位）。
+- `tests/test_bl_common.py` 新增 2 个用例：子进程 `TMP`/`TEMP`/`TMPDIR` 被隔离到 `<out>/logs/tmp-*` 且结束后清理；隔离目录创建失败时降级为 WARN 并继续执行。
+
 ## [1.1.0] - 2026-10-19
 
 一次系统性审计（两位独立审计员 + 全量回归）后的修复与增强版本。目标是让「交付出去的资产」和「闸门说的话」都可信。

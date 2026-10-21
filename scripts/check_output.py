@@ -164,7 +164,7 @@ def _export_candidates(out_dir, report, key):
     resolved = resolve_out_path(out_dir, recorded)
     if resolved:
         candidates.append(resolved)
-    candidates.append(os.path.join(out_dir, "exports", base))
+    candidates.append(os.path.join(out_dir, "exports", "model." + base))
     exports_dir = os.path.join(out_dir, "exports")
     if os.path.isdir(exports_dir):
         try:
@@ -357,6 +357,11 @@ def check_report(checker, out_dir):
     for key in ("blend", "glb"):
         raw = exports.get(key)
         record = exports_doc.get(key)
+        if raw is None:
+            # AGENTS 第 11 节 ERROR 关键字要求单独报「report 缺少 blend/glb 记录」，
+            # 不能复用「相对路径」文案（否则排查时会被误导成路径问题）。
+            checker.error("report 缺少 %s 导出记录（report.json 的 exports.%s）" % (key, key))
+            continue
         path = resolve_out_path(out_dir, raw)
         if path is None:
             checker.error("report 的导出路径必须是相对路径: %r" % (raw,))
@@ -587,6 +592,33 @@ def selftest():
         }, canonical_exports)
         corrupt = run_checks(corrupt_out, min_views=1)
         expect("损坏的规范名导出仍报 ERROR", corrupt.failed)
+
+        # 规范名 exports/model.* 不能被 exports/ 里排序更靠前的损坏文件遮蔽
+        #（旧实现规范名候选拼成 exports/blend，扫描结果顶替了优先级位 → 假「魔数不对」）。
+        shadowed = build_out("out-canonical-shadowed", {
+            "exports/aaa_broken.blend": b"NOT-A-BLEND",
+            "exports/aaa_broken.glb": b"NOT-A-GLTF0",
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, {})  # report 故意不带 exports 记录
+        shadow = run_checks(shadowed, min_views=1)
+        shadow_msgs = [message for _level, message in shadow.items]
+        expect("规范名导出不被同目录损坏文件遮蔽",
+               not any("魔数" in message for message in shadow_msgs))
+        expect("缺 exports 记录时明确报缺少记录",
+               any("缺少 blend 导出记录" in message for message in shadow_msgs))
+        expect("缺 exports 记录不误报相对路径: None",
+               not any("相对路径: None" in message for message in shadow_msgs))
+
+        # 宽松匹配能力必须保留：非规范文件名（report 无记录）仍要用 exports/ 扫描兜住。
+        loose = build_out("out-loose-name", {
+            "exports/deliverable.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/deliverable.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, {})
+        loose_result = run_checks(loose, min_views=1)
+        expect("非规范文件名仍能通过 exports 扫描定位",
+               not any("缺少导出文件" in message or "魔数" in message
+                       for _level, message in loose_result.items))
 
     if failures:
         print("\nSELFTEST FAILED: %d 项失败" % len(failures))
