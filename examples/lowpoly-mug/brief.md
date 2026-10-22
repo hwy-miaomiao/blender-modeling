@@ -90,7 +90,7 @@
 - [x] 杯腔为白色陶瓷（无串色）、杯柄与杯身相接无可见穿模、杯底与地台贴合（`bbox_min[2] = 0`）
 - [x] `model.py` 无绝对路径（grep `[A-Za-z]:\\` 命中 0）、只 import `blender_kit` 的公开函数、参数全部集中在 `PARAMS`
 - [x] 三张渲染图均用 `read_image` 真看过（见迭代记录）
-- [x] `python scripts/check_output.py --out "<本目录>"` → 21 PASS / 0 ERROR / 0 WARN（含 `exports/` 两个导出文件校验）
+- [x] `python scripts/check_output.py --out "<本目录>"` → 27 PASS / 0 ERROR / 0 WARN（含 `exports/` 两个导出文件校验；本机 py3.12 + Pillow 实测）
 
 ## 迭代记录
 

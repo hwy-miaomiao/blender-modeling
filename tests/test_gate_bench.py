@@ -10,9 +10,11 @@ gate_bench 的 selftest 会在临时目录造一份合成合格产物，跑 17 �
 
 import contextlib
 import io
+import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(SKILL_DIR, "scripts"))
@@ -34,6 +36,53 @@ class MutationListTest(unittest.TestCase):
             self.assertTrue(mutation["title"], mutation["id"])
             self.assertTrue(callable(mutation["apply"]), mutation["id"])
             self.assertTrue(mutation["expected"], mutation["id"])
+
+    def test_expected_codes_are_known_gate_codes(self):
+        known = {gate_bench.CODE_RENDERS, gate_bench.CODE_EXPORTS,
+                 gate_bench.CODE_REQUIRED, gate_bench.CODE_MODEL,
+                 gate_bench.CODE_REPORT, gate_bench.CODE_SCENE,
+                 gate_bench.CODE_REPORT_RENDERS, gate_bench.CODE_REPORT_EXPORTS,
+                 gate_bench.CODE_VISION, gate_bench.CODE_ITERATION,
+                 gate_bench.CODE_OTHER, gate_bench.CODE_PROBE}
+        for mutation in gate_bench.MUTATIONS:
+            for code in mutation["expected"]:
+                self.assertTrue(code in known or code.startswith("VISION"),
+                                "%s -> %s" % (mutation["id"], code))
+
+
+class RunVisionMetricsTest(unittest.TestCase):
+    """回归：analyze_out 的 skipped 列表不能当成「未安装 Pillow」放行。"""
+
+    @staticmethod
+    def _result(payload, returncode=1):
+        return {"returncode": returncode,
+                "stdout": json.dumps(payload, ensure_ascii=False),
+                "stderr": "", "timeout": False}
+
+    def test_partial_undecodable_is_not_treated_as_pillow_skip(self):
+        payload = {
+            "ok": False,
+            "skipped": ["view-front.png"],
+            "views": {"view-front.png": {}, "view-right.png": {}},
+            "issues": [{"level": "ERROR", "code": "VISION009",
+                        "message": "视觉闸门: [VISION009] 部分渲染图无法解码"}],
+        }
+        with mock.patch.object(gate_bench, "_run",
+                               return_value=self._result(payload)):
+            result = gate_bench.run_vision_metrics("/tmp/out", {})
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["skipped"])
+        self.assertIn("VISION009", result["codes"])
+        self.assertNotIn("SKIP", result["note"])
+
+    def test_global_skip_is_still_honoured(self):
+        payload = {"skipped": True, "reason": "Pillow 未安装"}
+        with mock.patch.object(gate_bench, "_run",
+                               return_value=self._result(payload, returncode=0)):
+            result = gate_bench.run_vision_metrics("/tmp/out", {})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertIn("SKIP", result["note"])
 
 
 class ClassifyTest(unittest.TestCase):

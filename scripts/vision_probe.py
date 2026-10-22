@@ -22,6 +22,8 @@ Pillow（可选依赖），Pillow 缺失时只能 SKIP。本脚本用自实现�
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import math
 import os
@@ -220,6 +222,66 @@ def _unfilter(raw, width, height, channels):
     return bytes(pixels)
 
 
+def _inflate_bounded(idat, limit):
+    """解压 IDAT，最多输出 limit 字节（防止小文件伪造超大像素流拖垮内存）。
+
+    超出 limit、流后有多余字节、或流未结束（截断）都抛 PngError。
+    """
+    decompressor = zlib.decompressobj()
+    out = bytearray()
+    try:
+        out += decompressor.decompress(idat, limit + 1)
+        while decompressor.unconsumed_tail and len(out) <= limit:
+            out += decompressor.decompress(decompressor.unconsumed_tail,
+                                           limit + 1 - len(out))
+    except zlib.error as exc:
+        raise PngError("像素数据无法解压（zlib: %s）" % exc)
+    if len(out) > limit:
+        raise PngError("像素数据超出声明尺寸（解压结果 > %d 字节，疑似伪造/解压炸弹）"
+                       % limit)
+    if decompressor.unused_data:
+        raise PngError("像素数据流之后存在多余字节（疑似拼接/伪造）")
+    if not decompressor.eof:
+        raise PngError("像素数据流不完整（疑似截断）")
+    return bytes(out)
+
+
+def pixel_stream_issues(data):
+    """校验 PNG 像素流：IDAT 解压后的字节数必须与 IHDR 声明一致。
+
+    与 decode_png 的区别：不做行过滤还原/像素统计（更快），但会解压 IDAT
+    并按声明尺寸限幅；对 8bit、非隔行、色型 0/2/4/6 做精确长度校验，其它规格
+    （16bit/隔行/未知色型）返回 [] 交由 Pillow 或结构校验兜底，避免误报。
+    check_output 在 Pillow 缺失时用它拦「块结构合法 + 像素流伪造」的渲染图。
+    """
+    ihdr, chunks, issues = _parse_chunks(data)
+    if issues:
+        return list(issues)
+    try:
+        width, height, depth, color_type, compression, filter_method, interlace = \
+            struct.unpack(">IIBBBBB", ihdr)
+    except struct.error as exc:
+        return ["IHDR 无法解析: %r" % (exc,)]
+    if (depth != 8 or color_type not in _CHANNELS or compression != 0
+            or filter_method != 0 or interlace != 0):
+        return []
+    if width < 1 or height < 1 or width > MAX_DIM or height > MAX_DIM:
+        return ["PNG 尺寸非法: %dx%d（上限 %d）" % (width, height, MAX_DIM)]
+    if width * height > MAX_PIXELS:
+        return ["PNG 像素数过大: %dx%d（上限 %d，防止伪造图撑爆内存）"
+                % (width, height, MAX_PIXELS)]
+    idat = b"".join(payload for ctype, payload in chunks if ctype == b"IDAT")
+    need = height * (width * _CHANNELS[color_type] + 1)
+    try:
+        raw = _inflate_bounded(idat, need)
+    except PngError as exc:
+        return [str(exc)]
+    if len(raw) != need:
+        return ["像素数据长度与声明尺寸不符（期望 %d 字节，实际 %d）"
+                % (need, len(raw))]
+    return []
+
+
 def decode_png(data):
     """解码 PNG 为 {"width", "height", "pixels": RGB bytes}；失败抛 PngError。"""
     ihdr, chunks, issues = _parse_chunks(data)
@@ -244,11 +306,9 @@ def decode_png(data):
         raise PngError("PNG 像素数过大: %dx%d（上限 %d，防止伪造图撑爆内存）"
                        % (width, height, MAX_PIXELS))
     idat = b"".join(payload for ctype, payload in chunks if ctype == b"IDAT")
-    try:
-        raw = zlib.decompress(idat)
-    except zlib.error as exc:
-        raise PngError("像素数据无法解压（zlib: %s）" % exc)
-    pixels = _unfilter(raw, width, height, _CHANNELS[color_type])
+    channels = _CHANNELS[color_type]
+    raw = _inflate_bounded(idat, height * (width * channels + 1))
+    pixels = _unfilter(raw, width, height, channels)
     return {"width": width, "height": height, "pixels": pixels}
 
 
@@ -590,9 +650,10 @@ def probe_files(paths, expect_size=None, min_unique=MIN_UNIQUE_COLORS,
 
 
 def probe_out_full(out_dir, sheet=None, cols=SHEET_COLS, tile_height=SHEET_TILE_HEIGHT,
-                   max_tiles=SHEET_MAX_TILES):
+                   max_tiles=SHEET_MAX_TILES, min_unique=MIN_UNIQUE_COLORS,
+                   min_std=MIN_LUMA_STD):
     """输出目录完整探针：渲染图 + （可选/自动发现的）联系表。"""
-    payload = probe_out(out_dir)
+    payload = probe_out(out_dir, min_unique=min_unique, min_std=min_std)
     renders_dir = os.path.join(os.path.abspath(out_dir), "renders")
     candidates = []
     if sheet:
@@ -603,7 +664,8 @@ def probe_out_full(out_dir, sheet=None, cols=SHEET_COLS, tile_height=SHEET_TILE_
     payload["sheet"] = None
     if candidates:
         sheets = [inspect_contact_sheet(path, renders_dir=renders_dir, cols=cols,
-                                        tile_height=tile_height, max_tiles=max_tiles)
+                                        tile_height=tile_height, max_tiles=max_tiles,
+                                        min_unique=min_unique, min_std=min_std)
                   for path in candidates]
         payload["sheet"] = sheets[0] if len(sheets) == 1 else sheets
         for item in sheets if isinstance(payload["sheet"], list) else [payload["sheet"]]:
@@ -809,6 +871,63 @@ def selftest():
                and isinstance(payload.get("files"), list)
                and isinstance(payload.get("reasons"), list))
 
+        # ---- R9 加固回归：像素流校验 / 解压炸弹 / CLI 参数传递 ----
+        def chunk(ctype, payload_bytes):
+            return (struct.pack(">I", len(payload_bytes)) + ctype + payload_bytes
+                    + struct.pack(">I",
+                                  zlib.crc32(ctype + payload_bytes) & 0xFFFFFFFF))
+
+        def png_of(ihdr_bytes, idat_bytes):
+            return (PNG_MAGIC + chunk(b"IHDR", ihdr_bytes)
+                    + chunk(b"IDAT", idat_bytes) + chunk(b"IEND", b""))
+
+        ihdr8 = struct.pack(">IIBBBBB", wide, tall, 8, 2, 0, 0, 0)
+        expect("像素流校验通过合法 PNG", pixel_stream_issues(good_bytes) == [])
+        garbage = png_of(ihdr8, b"definitely-not-zlib" * 64)
+        expect("块结构合法但 IDAT 非 zlib 必须被像素流校验拦下",
+               any("无法解压" in issue for issue in pixel_stream_issues(garbage)))
+        raw_stream = bytearray()
+        gradient = _gradient_pixels(wide, tall)
+        stride = wide * 3
+        for y in range(tall):
+            raw_stream.append(0)
+            raw_stream += gradient[y * stride:(y + 1) * stride]
+        truncated_stream = png_of(ihdr8, zlib.compress(bytes(raw_stream), 9)[:40])
+        expect("像素流被截断必须被校验拦下",
+               any("不完整" in issue or "无法解压" in issue
+                   for issue in pixel_stream_issues(truncated_stream)))
+        bomb = png_of(ihdr8, zlib.compress(b"\x00" * (4 * 1024 * 1024), 9))
+        expect("像素流解压量超声明尺寸（解压炸弹）必须被限幅拦下",
+               any("超出声明尺寸" in issue
+                   for issue in pixel_stream_issues(bomb)))
+        ihdr16 = struct.pack(">IIBBBBB", wide, tall, 16, 2, 0, 0, 0)
+        expect("16bit PNG 像素流校验降级不误报",
+               pixel_stream_issues(png_of(ihdr16, b"")) == [])
+
+        # --out 必须把 --min-unique/--min-std 传给探针
+        cli_out = os.path.join(tmp, "cli-out")
+        os.makedirs(os.path.join(cli_out, "renders"))
+        _write(os.path.join(cli_out, "renders", "view-front.png"), good_bytes)
+        original = sys.stdout
+        try:
+            sys.stdout = _Capture()
+            code = main(["--out", cli_out, "--min-unique", "1000000", "--json"])
+        finally:
+            sys.stdout = original
+        expect("--out 把 --min-unique 传给探针（阈值不可能满足必须 exit 1）",
+               code == 1)
+
+        # --dir 与 --sheet 组合必须显式报错，不能静默忽略 --sheet
+        error_text = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(error_text):
+                main(["--dir", renders, "--sheet", sheet_path])
+            raised = False
+        except SystemExit as exc:
+            raised = exc.code == 2
+        expect("--dir 与 --sheet 同时使用必须报参数错误",
+               raised and "--sheet" in error_text.getvalue())
+
     if failures:
         print("\nSELFTEST FAILED: %d 项失败" % len(failures))
         return 1
@@ -889,6 +1008,9 @@ def main(argv=None):
         return selftest()
     if args.sheet_cols < 1 or args.sheet_height < 1 or args.sheet_max < 1:
         parser.error("--sheet-cols/--sheet-height/--sheet-max 必须 >= 1")
+    if args.sheet and (args.dir or args.file):
+        parser.error("--sheet 不能与 --dir/--file 同时使用："
+                     "复算版式需配合 --out，或单独校验联系表")
 
     def run(payload):
         if args.json:
@@ -901,7 +1023,8 @@ def main(argv=None):
         payload = probe_out_full(
             os.path.abspath(args.out), sheet=args.sheet,
             cols=args.sheet_cols, tile_height=args.sheet_height,
-            max_tiles=args.sheet_max)
+            max_tiles=args.sheet_max,
+            min_unique=args.min_unique, min_std=args.min_std)
         if args.expect_size is not None:
             payload["expect_size"] = list(args.expect_size)
             for item in payload["files"]:

@@ -12,6 +12,7 @@
 | `test_snapshot.py` | ❌ 只要 Python 3.9+ | 同上 |
 | `test_safe_check.py` | ❌ 只要 Python 3.9+ | 同上 |
 | `test_check_output_report.py` | ❌ 只要 Python 3.9+ | 同上 |
+| `test_check_output_png_stream.py` | ❌ 只要 Python 3.9+（纯标准库，无需 Pillow） | 同上 |
 | `test_check_output_vision.py` | ❌ 只要 Python 3.9+（需 Pillow 生成真实 PNG；无 Pillow 时整类跳过） | 同上 |
 | `test_vision_probe.py` | ❌ 只要 Python 3.9+（纯标准库，无 Pillow 也跑） | 同上 |
 | `test_gate_bench.py` | ❌ 只要 Python 3.9+（纯标准库） | 同上 |
@@ -36,10 +37,10 @@ python -m unittest discover -s tests -v
 - `scripts/safe_check.py`：SAFE_MODE 静态审查正例 0 ERROR、subprocess/eval/绝对路径/`..`/变量路径（SAFE006 ERROR）/`Path.open`/盘符相对路径/`shutil` 拷贝/白名单 basename 绕过等反例必须命中对应 SAFE 码、`%TEMP%` 输出目录表达式放行、`--json` stdout 纯 JSON、`--selftest` 全过；
 - `scripts/bl_common.py`：`classify_log` 能过滤 `TBBmalloc` 噪音、识别 Traceback/RuntimeError、警告去重、错误数量封顶；`find_blender` 只返回真实存在的文件；`execute(vision=True)` 在 full 成功后回写 `report.vision`（无 Pillow/无模块时降级为 warning，`--no-vision` 不调用）；
 - 三个脚本模块在没有 Blender 的机器上可以正常 import；
-- `scripts/vision_probe.py`：PNG 结构校验（合法/截断/CRC 篡改）、`decode_png` 往返、5 种 filter、`image_stats` 空白判定、`inspect_image` 尺寸/空白/坏图原因、联系表版式复算与错尺寸、`probe_out` 对 `report.json` 声明尺寸校验、`--json` 纯 JSON、`--selftest` 全过；
+- `scripts/vision_probe.py`：PNG 结构校验（合法/截断/CRC 篡改）、`decode_png` 往返、5 种 filter（0-4）逐行混合往返、非法 filter 拒绝、像素流有界解压（垃圾 IDAT/截断流/解压炸弹/尾部多余字节）、`image_stats` 空白判定、`inspect_image` 尺寸/空白/坏图原因、联系表版式复算与错尺寸、`probe_out` 对 `report.json` 声明尺寸校验、`--json` 纯 JSON、`--selftest` 全过；
 - `scripts/gate_bench.py`：变异表 17 条（每条带 id/期望闸门/期望错误码）、`classify_message` 代码映射、`--selftest` 合成产物全部变异被拦且无逃逸、无闸门变异必须判 `escape`（防假绿）；
 - `scripts/doctor.py --vision`：对 `examples/*/renders` 判 `ok`、对空白/截断/错尺寸夹具判 FAIL 且 exit 1、`--vision --json` 的 stdout 必须是可解析纯 JSON（含 `vision.targets`）；
-- `check_output.py` 第 9 轮加固：NaN/inf 的 scene 计数、dimensions、renders 统计、exports bytes 全部 ERROR（旧版静默通过/崩溃）；渲染记录 width/height/bytes 与实际不符、dimensions 与 bbox 不一致、重复渲染记录、`..` 越界路径、PNG 结构损坏（截断/只有 IHDR 的伪造图）都必须 ERROR。
+- `check_output.py` 第 9 轮加固：NaN/inf 的 scene 计数、dimensions、renders 统计、exports bytes 全部 ERROR（旧版静默通过/崩溃）；渲染记录 width/height/bytes 与实际不符、dimensions 与 bbox 不一致、重复渲染记录、`..` 越界路径、PNG 结构损坏（截断/只有 IHDR 的伪造图，以及块结构/CRC 合法但 IDAT 非 zlib 流的伪造图——零依赖像素流校验，不需要 Pillow）都必须 ERROR。
 
 ## 2. kit 冒烟测试（手动，改了 kit/模板/导出后必跑）
 

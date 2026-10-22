@@ -269,7 +269,8 @@ def check_smoke(exe):
         if not result.get("ok"):
             record("FAIL", "smoke 渲染失败：%s" % ("; ".join(result.get("errors") or [])[:400]))
             keep_dir = True
-            print("       冒烟目录保留用于排查: %s" % tmp)
+            if not QUIET:  # --json 时 stdout 必须是纯 JSON
+                print("       冒烟目录保留用于排查: %s" % tmp)
             return
         renders = result.get("renders") or []
         exports = result.get("exports") or []
@@ -288,7 +289,7 @@ def check_smoke(exe):
             else:
                 record("PASS", "smoke 端到端通过：渲染 1 张 + 导出 glb/blend（%.1fs）"
                        % (result.get("duration_s") or 0))
-        if keep_dir:
+        if keep_dir and not QUIET:  # --json 时 stdout 必须是纯 JSON
             print("       冒烟目录保留用于排查: %s" % tmp)
     finally:
         if not keep_dir and os.path.isdir(tmp):

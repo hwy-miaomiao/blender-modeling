@@ -106,15 +106,15 @@
 - [x] 无穿模、无悬浮：脚轮与地台相切，座垫压在升降杆上，靠背支撑柱连接座垫与靠背
 - [x] `--stage full` 导出 blend + glb，`report.json` 合法且 dimensions 三轴为正
 - [x] `model.py` 中 `[A-Za-z]:\\` 绝对路径命中 0；`brief.md` 尺寸表与 `report.json` dimensions 误差 ≤ 10%
-- [x] `python scripts/check_output.py --out "<本目录>"` → 21 PASS / 0 ERROR / 0 WARN（含 `exports/` 两个导出文件校验）
+- [x] `python scripts/check_output.py --out "<本目录>"` → 27 PASS / 0 ERROR / 0 WARN（含 `exports/` 两个导出文件校验；本机 py3.12 + Pillow 实测）
 
 ## 迭代记录
 
 | 轮次 | 问题（证据） | 改了什么（PARAMS/函数） | 重跑结果 |
 | --- | --- | --- | --- |
 | 1 | 首轮 build 通过；render 后看图：整椅泛白、织物/金属/橡胶几乎同色，读不出深色网布 | 织物 (0.15,0.16,0.19)→(0.050,0.055,0.065)；金属 (0.52,0.54,0.57)→(0.280,0.290,0.310)、metallic 0.70；橡胶 0.05→0.02 | 重渲：front mean 128/std 50、right 119/49、iso 144/32，材质三档可区分 |
-| 2 | 材质调试脚本确认 slots/材质索引正确（base 2 槽 48+70、back 2 槽 98+12），泛白不是材质串色而是强光 + AgX | 不改材质分配，只改 `colors` 数值；记录像素证据（座面 145 vs 地台 178） | 椅子比地台暗、轮廓光完整 |
-| 3 | 终检：脚轮与地台相切、靠背与座垫由支撑柱连接、扶手垫倒角可见；三视角完整 | 无代码改动（`apply_modifiers` 在 join 前，倒角未丢） | `--stage full` 通过，3 图 + report.json 输出 |
+| 2 | 材质调试脚本确认 slots/材质索引正确（base 2 槽 48+70、靠背背板 2 槽 98+12），泛白不是材质串色而是强光 + AgX；对照 view-front.png 渲染逐像素核对 | 不改材质分配，只改 `colors` 数值；记录像素证据（座面 145 vs 地台 178） | 椅子比地台暗、轮廓光完整（view-front.png 复核） |
+| 3 | 终检：脚轮与地台相切、靠背与座垫由支撑柱连接、扶手垫倒角可见；三视角完整（view-front.png / view-right.png / view-iso.png） | 无代码改动（`apply_modifiers` 在 join 前，倒角未丢） | `--stage full` 通过，3 图 + report.json 输出 |
 
 > 看图记录：`view-front.png`（正面：座垫/靠背/扶手对称、五星底座居中）、`view-right.png`（侧面：靠背 8° 后仰、升降杆与防尘罩层次）、`view-iso.png`（3/4 视角：整体轮廓与金属反光）。三张图均用 `read_image` 真看过。
 

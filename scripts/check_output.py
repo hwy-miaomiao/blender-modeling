@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -367,11 +368,12 @@ def check_required_files(checker, out_dir):
 
 
 def _png_structure_problems(path):
-    """用纯 stdlib 视觉探针校验 PNG 结构（截断/缺 IEND/CRC 失败）。
+    """用纯 stdlib 视觉探针校验 PNG：块结构（截断/缺 IEND/CRC 失败）+ 像素流。
 
     返回 issue 列表；探针不可导入时返回 None（无法校验，不误报）。
-    只读文件做块级校验，不解码像素（Pillow 缺失时这是唯一能拦住
-    「合法 IHDR + 垃圾字节」伪造渲染图的手段）。
+    R9 加固：块结构合法但 IDAT 不是可解压数据/解压后长度与 IHDR 声明不符
+    （「合法 IHDR + 垃圾字节」伪造图）在 Pillow 缺失时会骗过纯体积+尺寸检查，
+    这里用 vision_probe.pixel_stream_issues 补上像素流长度的零依赖校验。
     """
     module = _load_sibling("vision_probe")
     if module is None:
@@ -382,7 +384,10 @@ def _png_structure_problems(path):
     except OSError:
         return ["无法读取文件"]
     try:
-        return module.structure_issues(data)
+        issues = list(module.structure_issues(data))
+        if not issues and hasattr(module, "pixel_stream_issues"):
+            issues = list(module.pixel_stream_issues(data))
+        return issues
     except Exception as exc:  # noqa: BLE001 - 探针自身异常不能打断闸门
         return ["结构校验异常: %r" % (exc,)]
 
@@ -962,10 +967,10 @@ def _png_chunk(ctype, payload):
 
 
 def _png_header(width, height, complete=True):
-    """生成自测用 PNG 头。
+    """生成自测用 PNG 头（不是可解码的图片）。
 
-    complete=True 时带空 IDAT + IEND（结构完整、CRC 合法，但像素解不出来），
-    check_output 的结构校验会放行、Pillow 重算统计会静默降级；
+    complete=True 时带空 IDAT + IEND（块结构/CRC 合法，但像素流为空、解不出来），
+    只用于 png_size 这类头部解析用例；check_output 的像素流校验会拦下它。
     complete=False 时只有 IHDR（用于测试「截断/伪造 PNG 必须被拦截」）。
     """
     import zlib
@@ -975,6 +980,68 @@ def _png_header(width, height, complete=True):
         data += _png_chunk(b"IDAT", zlib.compress(b""))
         data += _png_chunk(b"IEND", b"")
     return data
+
+
+_VALID_PNG_CACHE = {}
+
+
+def _make_valid_png(width=128, height=128):
+    """自测用：生成真正可解码的 8bit RGB PNG（filter=0，渐变+色块，>15KB）。
+
+    与 _png_header 的「只有合法块结构」不同，像素流可被 Pillow 解码；
+    check_output 的零依赖像素流校验也会放行，代表真实渲染图。
+    """
+    width, height = int(width), int(height)
+    key = (width, height)
+    if key in _VALID_PNG_CACHE:
+        return _VALID_PNG_CACHE[key]
+    import zlib
+    rows = []
+    for y in range(height):
+        row = bytearray(width * 3)
+        for x in range(width):
+            index = x * 3
+            row[index] = (40 + (x * 150) // max(1, width - 1)) & 0xFF
+            row[index + 1] = (40 + (y * 150) // max(1, height - 1)) & 0xFF
+            row[index + 2] = (128 + ((x + y) % 64)) & 0xFF
+        rows.append(b"\x00" + bytes(row))
+    raw = b"".join(rows)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    data = (PNG_MAGIC + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"IDAT", zlib.compress(raw, 9))
+            + _png_chunk(b"tEXt", b"Comment\x00" + b"self-test padding" * 1024)
+            + _png_chunk(b"IEND", b""))
+    _VALID_PNG_CACHE[key] = data
+    return data
+
+
+def _png_bad_filter(width=128, height=128):
+    """自测用：块结构与像素流长度都合法、但行过滤类型非法的 PNG。
+
+    Pillow 解不出（视觉闸门 VISION008/009 用例）；纯结构+长度校验放行。
+    """
+    import zlib
+    width, height = int(width), int(height)
+    raw = b"".join(b"\x09" + b"\x40" * (width * 3) for _ in range(height))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (PNG_MAGIC + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"IDAT", zlib.compress(raw, 9))
+            + _png_chunk(b"tEXt", b"Comment\x00" + b"bad filter" * 2048)
+            + _png_chunk(b"IEND", b""))
+
+
+def _png_forged_idat(width=128, height=128):
+    """自测用：块结构/CRC 全合法、IDAT 不是 zlib 流、体积 >15KB 的伪造 PNG。
+
+    模拟「合法头部 + 垃圾字节」伪造渲染图：Pillow 解不出（VISION008），
+    check_output 的零依赖像素流校验也必须拦下（『像素数据无法解压』）。
+    """
+    width, height = int(width), int(height)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (PNG_MAGIC + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"IDAT", b"not-a-zlib-stream" * 2048)
+            + _png_chunk(b"tEXt", b"Comment\x00" + b"forged" * 4096)
+            + _png_chunk(b"IEND", b""))
 
 
 def selftest():
@@ -1048,15 +1115,28 @@ def selftest():
                 fh.write('import os, sys\nsys.path.insert(0, os.environ["BLENDER_KIT_DIR"])\nimport blender_kit\n')
             with open(os.path.join(base, "brief.md"), "w", encoding="utf-8") as fh:
                 fh.write("# brief\n")
-            with open(os.path.join(base, "renders", "view-front.png"), "wb") as fh:
-                fh.write(_png_header(512, 512) + b"\x00" * (16 * 1024))
+            render_path = os.path.join(base, "renders", "view-front.png")
+            with open(render_path, "wb") as fh:
+                fh.write(_make_valid_png(128, 128))
+            stats = _recompute_render_stats(render_path)
+            if stats is None:  # 无 Pillow：退化成旧口径，统计重算静默降级
+                stats = {"mean": 0.0, "std": 20.0, "black_ratio": 0.1}
             for rel, payload in export_files.items():
                 path = os.path.join(base, rel.replace("/", os.sep))
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "wb") as fh:
                     fh.write(payload)
-            payload = dict(report)
+            payload = copy.deepcopy(report)
             payload["exports"] = exports_record
+            payload["renders"] = [{
+                "path": "renders/view-front.png",
+                "mean": stats["mean"],
+                "std": stats["std"],
+                "black_ratio": stats["black_ratio"],
+                "width": 128,
+                "height": 128,
+                "bytes": len(_make_valid_png(128, 128)),
+            }]
             if extra_report:
                 payload.update(extra_report)
             with open(os.path.join(base, "report.json"), "w", encoding="utf-8") as fh:
@@ -1064,8 +1144,8 @@ def selftest():
             return base
 
         def expect_out(name, built, vision=False):
-            # 自测用的 PNG 只有合法头部（Pillow 解不出来），默认关闭视觉闸门，
-            # 视觉相关行为由下方专门的用例覆盖。
+            # 自测渲染图现在是真正可解码的 PNG，report 统计取 Pillow 实测值
+            # （Pillow 缺失时降级为旧口径）；视觉相关行为由下方专门用例覆盖。
             result = run_checks(built, min_views=1, vision=vision)
             expect(name, not result.failed)
             if result.failed:
@@ -1200,23 +1280,49 @@ def selftest():
         expect("--no-vision 等价关闭视觉闸门",
                not run_checks(good_iter, min_views=1, vision=False).failed)
 
-        # B1：渲染图全部无法解码时不能 SKIP 放行。自测 PNG 只有头部，Pillow 可用时
-        # 正好制造「有 PNG 但一张都解不出来」；没装 Pillow 时无法区分，按 SKIP 语义。
-        bad_png = build_out("out-bad-png", dict(iteration_exports), canonical_exports)
+        # B1：渲染图全部无法解码时不能 SKIP 放行。伪造图 = 块结构/CRC 合法、
+        # 体积 >15KB，但 IDAT 不是 zlib 流（旧实现纯体积+尺寸检查会放行）。
+        forged_png = build_out("out-forged-png", dict(iteration_exports),
+                               canonical_exports)
+        forged_path = os.path.join(forged_png, "renders", "view-front.png")
+        with open(forged_path, "wb") as fh:
+            fh.write(_png_forged_idat(128, 128))
+        forged = run_checks(forged_png, min_views=1)
+        expect("伪造渲染图（合法块结构+垃圾 IDAT）必须 ERROR（Pillow 缺失也不放过）",
+               forged.failed)
+        forged_messages = [message for level, message in forged.items
+                           if level == "ERROR"]
+        expect("伪造渲染图被零依赖像素流校验拦下（不依赖 Pillow）",
+               any("PNG 结构损坏" in message and "无法解压" in message
+                   for message in forged_messages))
+
         vision_module = _load_sibling("vision_metrics")
+
+        # 视觉闸门仍有独立价值：像素流长度合法、但行过滤类型非法（Pillow 解不出）。
+        # 纯结构+长度校验发现不了坏 filter，只有 Pillow 能判死。
         if vision_module is not None and vision_module.pillow_available():
-            expect("渲染图全部无法解码时视觉闸门必须 ERROR",
-                   run_checks(bad_png, min_views=1).failed)
-        else:
-            expect("无 Pillow 时坏图无法区分，视觉闸门 SKIP 不报 ERROR",
-                   not run_checks(bad_png, min_views=1).failed)
+            bad_filter = build_out("out-bad-filter", dict(iteration_exports),
+                                   canonical_exports)
+            with open(os.path.join(bad_filter, "renders", "view-front.png"),
+                      "wb") as fh:
+                fh.write(_png_bad_filter(128, 128))
+            expect("像素流长度合法但 Pillow 解不出的坏图，视觉闸门必须 ERROR",
+                   run_checks(bad_filter, min_views=1).failed)
+
+        # 零依赖像素流校验不能误伤真正可解码的渲染图
+        valid_probe_dir = os.path.join(tmp, "valid-probe")
+        os.makedirs(valid_probe_dir)
+        valid_probe_path = os.path.join(valid_probe_dir, "valid.png")
+        with open(valid_probe_path, "wb") as fh:
+            fh.write(_make_valid_png(96, 96))
+        expect("像素流校验放行可解码 PNG（不误伤正常渲染图）",
+               _png_structure_problems(valid_probe_path) == [])
 
         # B10 残留：Pillow 可用时 check_report 会用 PNG 重算 mean/std/black_ratio 并与
-        # report.renders 对照。自测 PNG 只有头部，重算必须安全返回 None（静默降级），
-        # 由上面的视觉闸门用例兜底，不能抛异常打断闸门。
+        # report.renders 对照。坏图重算必须安全返回 None（静默降级），由视觉闸门兜底，
+        # 不能抛异常打断闸门。
         expect("坏 PNG 重算渲染统计返回 None（降级不崩）",
-               _recompute_render_stats(
-                   os.path.join(bad_png, "renders", "view-front.png")) is None)
+               _recompute_render_stats(forged_path) is None)
 
         # R3-B1：只坏一部分渲染图时视觉指标覆盖不全，也必须 ERROR（不能降级为 WARN）。
         # 用桩替换 _load_sibling 返回的 vision 模块，避免自测依赖 Pillow 生成真实 PNG。
@@ -1244,7 +1350,7 @@ def selftest():
             globals()["_load_sibling"] = lambda name: (
                 _StubVision if name == "vision_metrics" else original_loader(name))
             partial_checker = Checker()
-            check_vision(partial_checker, bad_png,
+            check_vision(partial_checker, forged_png,
                          ["view-front.png", "view-right.png", "view-iso.png"])
         finally:
             globals()["_load_sibling"] = original_loader
@@ -1437,7 +1543,7 @@ def selftest():
                 _StubVisionIssues if name == "vision_metrics"
                 else original_loader(name))
             code_checker = Checker()
-            check_vision(code_checker, bad_png, ["view-front.png"])
+            check_vision(code_checker, forged_png, ["view-front.png"])
         finally:
             globals()["_load_sibling"] = original_loader
         expect("视觉闸门文案带 VISION 错误码",
@@ -1475,7 +1581,7 @@ def selftest():
             globals()["_load_sibling"] = lambda name: (
                 _StubVision009 if name == "vision_metrics" else original_loader(name))
             duplicate_checker = Checker()
-            check_vision(duplicate_checker, bad_png, ["view-front.png"])
+            check_vision(duplicate_checker, forged_png, ["view-front.png"])
         finally:
             globals()["_load_sibling"] = original_loader
         expect("VISION009 不重复报两条",

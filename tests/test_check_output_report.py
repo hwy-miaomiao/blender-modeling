@@ -29,8 +29,13 @@ def _make_out(tmp, export_records):
                  "import blender_kit\n")
     with open(os.path.join(base, "brief.md"), "w", encoding="utf-8") as fh:
         fh.write("# brief\n")
-    with open(os.path.join(base, "renders", "view-front.png"), "wb") as fh:
-        fh.write(check_output._png_header(512, 512) + b"\x00" * (16 * 1024))
+    render_path = os.path.join(base, "renders", "view-front.png")
+    png = check_output._make_valid_png(128, 128)
+    with open(render_path, "wb") as fh:
+        fh.write(png)
+    stats = check_output._recompute_render_stats(render_path)
+    if stats is None:  # 无 Pillow：统计重算静默降级，用旧口径占位
+        stats = {"mean": 0.0, "std": 20.0, "black_ratio": 0.1}
     with open(os.path.join(base, "exports", "model.blend"), "wb") as fh:
         fh.write(BLEND_PAYLOAD)
     with open(os.path.join(base, "exports", "model.glb"), "wb") as fh:
@@ -43,7 +48,15 @@ def _make_out(tmp, export_records):
         "light_count": 3,
         "dimensions": [1.0, 1.0, 1.0],
         "exports": export_records,
-        "renders": [{"path": "renders/view-front.png", "std": 20.0, "black_ratio": 0.1}],
+        "renders": [{
+            "path": "renders/view-front.png",
+            "mean": stats["mean"],
+            "std": stats["std"],
+            "black_ratio": stats["black_ratio"],
+            "width": 128,
+            "height": 128,
+            "bytes": len(png),
+        }],
     }
     with open(os.path.join(base, "report.json"), "w", encoding="utf-8") as fh:
         json.dump(report, fh)

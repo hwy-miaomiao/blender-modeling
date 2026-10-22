@@ -210,12 +210,14 @@ class VisionGateIntegrationTest(unittest.TestCase):
                         messages(result, "WARN"))
 
     def test_all_undecodable_pngs_is_error(self):
+        # 坏图 = 块结构与像素流长度都合法、但行过滤类型非法：check_output 的
+        # 零依赖结构校验放行，只有 Pillow 解码能判死 → 必须由视觉闸门 ERROR。
         with tempfile.TemporaryDirectory() as tmp:
             out = build_out(tmp)
             for name in VIEW_BOXES:
                 path = os.path.join(out, "renders", name)
                 with open(path, "wb") as handle:
-                    handle.write(check_output._png_header(512, 512) + b"\x00" * 20000)
+                    handle.write(check_output._png_bad_filter(512, 512))
             result = run_checks(out)
         self.assertTrue(result.failed)
         self.assertTrue(any("全部无法解码" in message
@@ -229,7 +231,7 @@ class VisionGateIntegrationTest(unittest.TestCase):
             attach_vision(out, backfill=False)
             bad_path = os.path.join(out, "renders", "view-right.png")
             with open(bad_path, "wb") as handle:
-                handle.write(check_output._png_header(512, 512) + b"\x00" * 20000)
+                handle.write(check_output._png_bad_filter(512, 512))
             result = run_checks(out)
         self.assertTrue(result.failed, messages(result, "ERROR"))
         errors = messages(result, "ERROR")

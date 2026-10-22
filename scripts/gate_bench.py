@@ -191,7 +191,11 @@ def run_vision_metrics(root, env):
         return {"gate": "vision_metrics", "ok": False, "exit": result["returncode"],
                 "codes": [CODE_OTHER], "note": "输出异常", "skipped": False,
                 "errors": ["无法解析 vision_metrics --json 输出"]}
-    if payload.get("skipped"):
+    # 只有「未安装 Pillow」的全局 SKIP 才算放行（vision_metrics.py 的 main 用
+    # skipped=True 表示）；analyze_out 的 payload 里 skipped 是「无法解码的文件名
+    # 列表」（部分坏图 → VISION009 ERROR），非空列表不能当成 SKIP，否则会把
+    # 视觉闸门回归伪装成全绿。
+    if payload.get("skipped") is True:
         return {"gate": "vision_metrics", "ok": True, "exit": result["returncode"],
                 "codes": [], "note": "SKIP（未安装 Pillow）", "skipped": True,
                 "errors": []}

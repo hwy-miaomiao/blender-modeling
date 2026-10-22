@@ -402,7 +402,7 @@ python scripts/check_output.py --out "$OUT" --no-vision
 | `report.renders 记录的 width/height/bytes 与实际不符` | report 与真实 PNG/文件脱节（手改或换图） | 重跑 `--stage full`；不要手改 report |
 | `report.scene.dimensions 与 bbox_min/bbox_max 不一致` | 尺寸被改或 bbox 失真（容差 max(1e-3, 1%)） | 重跑 `--stage full`；dims 必须等于 bbox 跨度 |
 | `report 里出现非有限数字` | report.json 含 NaN/Infinity（Python json 能解析但无意义，旧闸门会静默放行） | 删掉手改内容，重跑 `--stage full` |
-| `渲染图 PNG 结构损坏（截断/伪造/CRC 失败）` | 只有合法文件头的假 PNG 也会被结构校验拦下（零依赖，不需要 Pillow） | 删除坏图重渲；`python scripts/vision_probe.py --dir "<输出目录>\renders"` 定位到具体文件 |
+| `渲染图 PNG 结构损坏（截断/伪造/CRC 失败）` | 只有合法文件头的假 PNG、以及「块结构/CRC 全合法但 IDAT 不是 zlib 流」的伪造图都会被零依赖校验（块结构 + 像素流）拦下（不需要 Pillow） | 删除坏图重渲；`python scripts/vision_probe.py --dir "<输出目录>\renders"` 定位到具体文件 |
 | `report.renders 存在重复记录` / `渲染图数量与渲染记录不一致` | 同一文件被统计两次，或 `renders/` 实际 PNG 数与记录条数不符 | 重跑 `--stage render/full`；删掉多余/占位图 |
 | `迭代记录: report 含 vision，但…没有任何数据行` | 声明了新视觉指标却没有迭代记录（新产物至少 1 轮） | 按第 9 节补 1 行带图名与量化值的记录 |
 | 渲染图过小或 `std <= 4.0` / `black_ratio >= 0.98` | 空图/全黑/纯色图 | 检查灯光/相机/world，按第 14 节重渲 |
@@ -514,7 +514,7 @@ WARN 可以带过，但要在交付说明里写明原因。视觉类 WARN（底�
 | 终渲闸门 | 同上 `--stage full --label final --timeout 900` | `ok=true`；`exports` 含 blend+glb；`report.json` 合法；final 图看好 | 检查导出分支/日志 |
 | 交付闸门 | `python scripts/check_output.py --out "<输出目录>"` | 退出码 0；0 ERROR（WARN 要解释）；含 PNG 结构、report 尺寸/字节一致性、非有限数字、路径越界检查 | 按 ERROR 关键字表（第 11 节）逐条修 |
 | 视觉闸门（check_output 内置） | `python scripts/vision_metrics.py --out "<输出目录>"`（或随交付闸门自动执行） | 0 ERROR：主体占比 3%-90%、四边留白 ≥1%、底部留白 ≤55%；全部声明的渲染图均可解码（任一张无法解码 → VISION008/009 ERROR）；`report.vision` 与实测逐字段一致；Pillow 可用时 `report.renders` 的 `mean/std/black_ratio` 从 PNG 重算一致（不一致 ERROR）；WARN 需解释 | 按 VISION001-007 调相机/构图/灯光；VISION008（全部无法解码）与 VISION009（部分无法解码）都必须重渲；未装 Pillow 时 SKIP，但 CI 要求 SKIP=0 |
-| 视觉探针闸门（零依赖，可进 CI） | `python scripts/doctor.py --vision`（或 `python scripts/vision_probe.py --out "<输出目录>"` / `--dir "<输出目录>\renders"`） | 0 FAIL：每张 PNG 可解码（结构/CRC/IDAT/IEND 合法）、像素尺寸与 `report.renders` 声明一致、非空白（唯一色 ≥8 且亮度 std ≥2）；联系表存在时版式/格数/尺寸正确 | 按 `reasons` 重渲对应图；`--json` 给机器判决 `{ok,files,reasons}` |
+| 视觉探针闸门（零依赖，可进 CI） | `python scripts/doctor.py --vision`（或 `python scripts/vision_probe.py --out "<输出目录>"` / `--dir "<输出目录>\renders"`） | 0 FAIL：每张 PNG 可解码（结构/CRC/IDAT/IEND 合法、像素流可按声明尺寸有界解压）、像素尺寸与 `report.renders` 声明一致、非空白（唯一色 ≥8 且亮度 std ≥2）；联系表存在时版式/格数/尺寸正确 | 按 `reasons` 重渲对应图；`--json` 给机器判决 `{ok,files,reasons}` |
 | 变异闸门基准（改闸门代码后必跑） | `python scripts/gate_bench.py`（`--json` 给数字；`--selftest` 无需示例） | 退出码 0；34/34 变异被拦（本机实测抓取率 100%，`baseline_ok=true`；CI 同口径） | 表格里 `escape` 行即闸门回归：修对应检查逻辑，禁止改基准期望值来「变绿」 |
 | SAFE_MODE 闸门 | `python scripts/safe_check.py "<输出目录>\model.py" templates\model_template.py templates\edit_model_template.py` | 0 ERROR（无 subprocess/eval/exec/网络/`__import__`/`shutil` 拷贝；无绝对路径、盘符相对、`..`、变量路径写文件，含 `Path.open`/`write_text`） | 删危险调用，改用 kit API 与白名单目录；`--selftest` 可先验证检查器本身 |
 | 快照闸门（可选，多轮迭代） | `python scripts/snapshot.py --out "<输出目录>" --list` | `best.json` 的 schema/目录一致、best 版本结构合法（`validate_best` 无 WARN） | `--rollback` 回退最佳版本（只还原 model.py/renders/report.json，不还原 exports/），之后重跑 `--stage full` 重新导出 |

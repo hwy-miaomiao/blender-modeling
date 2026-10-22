@@ -161,7 +161,7 @@ python scripts\check_output.py --out "$OUT"
 | `scripts/doctor.py` | 环境体检（`--smoke` 跑端到端冒烟渲染；`--vision` 纯标准库验证渲染图可解码/尺寸/非空白） |
 | `scripts/check_output.py` | 交付闸门（文件/魔数/渲染非全黑/report 统计/视觉指标/迭代记录/快照结构） |
 | `scripts/vision_metrics.py` | 从渲染图算可量化视觉指标（主体占比/四边留白/着地间隙/亮度分布）并回写 `report.json` |
-| `scripts/vision_probe.py` | 零依赖 PNG 解码探针：结构/CRC/尺寸/非空白（纯色或近纯色）校验，供 `doctor --vision`、CI 与 `check_output` 复用 |
+| `scripts/vision_probe.py` | 零依赖 PNG 解码探针：结构/CRC/像素流/尺寸/非空白（纯色或近纯色）校验，供 `doctor --vision`、CI 与 `check_output` 复用 |
 | `scripts/gate_bench.py` | 变异闸门基准：对示例产物做确定性变异并统计拦截率，有逃逸 exit 1（不需要 Blender） |
 | `scripts/snapshot.py` | 迭代版本化：`history/vN` 快照 + `best.json` 基线，支持 `--list` / `--promote` / `--rollback` |
 | `scripts/safe_check.py` | SAFE_MODE 静态审查：model.py 禁止 subprocess/eval/网络/越界写文件，给出 `file:line` 级 ERROR/WARN |
@@ -219,7 +219,7 @@ LF 行尾检查、`pip install pillow`、`vision_probe` / `gate_bench` 自测、
 | check_output 报 `report.vision 与实测不一致` | 渲染图被替换/重渲染后 report 过期：重跑 `python scripts\vision_metrics.py --out "$OUT" --write`（原子覆盖） |
 | check_output 报 `report.renders 统计与渲染图不符` | Pillow 可用时会用 sRGB 亮度公式从 PNG 重算 `mean/std/black_ratio`，与 `report.renders[]` 记录不一致（容差 mean/std 1.0、black_ratio 0.01）。说明 report 陈旧或图被替换：重跑 `--stage full` 重新生成 report，不要手改数字；无 Pillow 时该检查自动降级跳过 |
 | check_output 报 `report.renders 记录的 width/height/bytes 与实际不符` 或 `report.scene.dimensions 与 bbox 不一致` | report 被手改或与渲染图/场景脱节：重跑 `--stage full` 重新生成；`report.renders[].width/height/bytes` 必须与真实 PNG 一致，`dimensions` 必须等于 `bbox_max - bbox_min`（容差 max(1e-3, 1%)） |
-| check_output 报 `渲染图 PNG 结构损坏（截断/伪造/CRC 失败）` | 渲染图被截断/伪造（只有合法文件头的假 PNG 也拦）：重渲染；`scripts/vision_probe.py --dir <renders>` 可单独定位到具体文件与原因 |
+| check_output 报 `渲染图 PNG 结构损坏（截断/伪造/CRC 失败）` | 渲染图被截断/伪造（只有合法文件头、或块结构/CRC 合法但 IDAT 是垃圾的假 PNG 也拦，零依赖、不需要 Pillow）：重渲染；`scripts/vision_probe.py --dir <renders>` 可单独定位到具体文件与原因 |
 | `doctor.py --vision` 报某张图「空白/纯色」 | 渲染落在空场景或相机没对准物体（与 check_output 全黑判定互补的证据）；先看 `renders/` 里那张图，再查相机与灯光 |
 | `gate_bench.py` 报「逃逸」并 exit 1 | 有变异没被任何闸门拦住 = 闸门回归；按表格里的 `escape` 行定位 `check_output` / `vision_probe` 对应检查并修，不要改基准的期望值来「变绿」 |
 | `--rollback` 后导出文件与模型不一致 | rollback 只还原 `model.py` / `renders/` / `report.json`，**不还原 `exports/`**；回滚后重跑 `--stage full` 重新导出 |
