@@ -19,6 +19,12 @@
 - `check_output.py` 新增三组结构检查：视觉指标闸门（`--no-vision` 可关，Pillow 缺失自动 SKIP）、brief 迭代记录校验（引用的渲染图必须存在；`report` 含 `vision` 时要求每轮写图名+量化值）、`history/best.json` 结构一致性（只 WARN）。
 - 测试：新增 `tests/test_vision_metrics.py`、`tests/test_snapshot.py`、`tests/test_safe_check.py`（+27 用例，视觉与快照测试用临时目录与假 PNG，不依赖 Blender/Pillow）；`ci_check.py` REQUIRED_FILES 与 CI 工作流同步新增三个 `--selftest` 步骤。
 - 文档：README 新增「什么时候用本项目（以及什么时候不用）」分工表（vs TRELLIS/Hunyuan3D、blender-mcp）与三个新脚本命令；AGENTS 铁律 0.3 扩为七条（新增 SAFE_MODE）、§9 迭代记录改为「看了哪张图 + 量化值」5 列、§11 闸门表与 §14 清单接入 `report.vision`、§17 新增视觉/SAFE_MODE/快照三道闸门；SKILL 铁律与最小工作流同步。
+- `scripts/vision_probe.py`：零依赖 PNG 解码探针（纯标准库：chunk/CRC/IDAT/IEND 校验、5 种 filter 解码、像素尺寸、唯一色与亮度 std 判空白、联系表版式/格数复算）；`--out`/`--dir`/`--file`/`--sheet`/`--expect-size`/`--json`/`--selftest`，失败 exit 1；`structure_issues()` 同时供 `check_output` 做零依赖 PNG 结构校验。本机 py3.12 与 py3.9 `--selftest` 均通过（16 项），示例两个目录各 3 张 512×512 实图 PASS。
+- `scripts/gate_bench.py`：变异闸门基准（竞品「commit gate + 可验证闸门」思路的本仓落地）——对 `examples/` 两个合格产物施加 17 种确定性变异（缺渲染/截断/空白/伪造 PNG、report 尺寸/字节/统计被改、NaN/inf、导出缺失、路径越界、重复记录等），逐条交给 `check_output` / `vision_metrics` / `vision_probe` 判定，输出「变异 → 是否被拦 → 命中错误码」表格与抓取率；有逃逸 exit 1，`--json` 给 README 数字，`--selftest` 用合成产物（不需要 Blender）。本机实测 34/34 拦截、0 逃逸、抓取率 100%。
+- `scripts/doctor.py --vision`：环境体检新增「视觉探针」检查（默认 `examples/*/renders`，可用 `--vision-out`/`--vision-dir` 追加目标），纯文件级、不依赖 Blender/Pillow，失败 FAIL；`--json` 输出 `vision.targets` 机器判决 `{ok, files, reasons}`，供 CI 与代理自检复用。
+- `check_output.py` 闸门加固（坏输入不再静默通过）：NaN/Infinity 一律判 ERROR（旧版比较恒 False 静默放行）；`report.renders[]` 的 `width/height/bytes` 与实际 PNG/文件对照；`dimensions` 与 `bbox_min/bbox_max` 跨度自洽（容差 max(1e-3, 1%)）；`..` 越界路径判 ERROR；PNG 结构损坏（截断/伪造/CRC）零依赖拦截；重复渲染记录与渲染图数量不符新增检查。
+- 测试：新增 `tests/test_vision_probe.py`（16 项：解码/结构/统计/联系表版式/JSON 纯度）、`tests/test_gate_bench.py`（9 项：变异表/分类/自测基线）、`tests/test_doctor_vision.py`（7 项：正常/坏图/JSON 纯度/退出码），并扩展 `test_snapshot.py`、`test_vision_metrics.py`、`test_check_output_report.py`；unittest 在 py3.12 与 py3.9 全绿（bpy 相关用例自动 skip）。
+- CI：工作流新增 `vision_probe.py --selftest`、`gate_bench.py --selftest`、`doctor.py --vision` 与 Python 3.12 job 上的 `gate_bench.py` 真跑（0 逃逸）；README/AGENTS/references 同步新闸门与实测数字。
 
 ### 修复
 
@@ -35,6 +41,16 @@
 - **第二轮验证 B10 残留：`report.renders` 统计也从渲染图重算对照**：`check_output` 在 Pillow 可用时用与 kit 相同的 sRGB 亮度公式（`lum = 0.2126R + 0.7152G + 0.0722B`、alpha≤2 忽略、总体 std、`black_ratio = lum<8` 占比）从 PNG 重算 `mean/std/black_ratio`，与 `report.json.renders[]` 记录对照（容差 mean/std 1.0、`black_ratio` 0.01），不一致报 ERROR「report.renders 统计与渲染图不符」；Pillow 缺失或解码失败静默降级（不误报）。`tests/test_check_output_vision.py` 增篡改 std / black_ratio 的反例。
 - **第二轮验证 R2-B1：无 Pillow 环境测试契约**：`tests/test_vision_metrics.py` 的 `test_undecodable_png_is_error_not_skip` 改用 `@unittest.skipUnless(vm.pillow_available(), ...)` 跳过，与 `tests/README.md`「Pillow 用例自动跳过」一致；无 Pillow 的 Python 3.9.13 环境整份 `unittest discover` 全绿（20 skip）。
 - **第三轮验证 R3-B1：部分渲染图损坏不再降级为 WARN**：`check_output.check_vision` 把 `skipped` 从 WARN 升为 `VISION009` ERROR，错误信息列出无法解码的文件名/张数（`全部无法解码` 的 `VISION008` 也补上文件名）；Pillow 缺失仍 SKIP 降级，`--no-vision` 仍可整体关闭视觉闸门。`tests/test_check_output_vision.py` 增「好图+坏图混合 → ERROR」用例，`check_output --selftest` 增桩测试（共 40 项）；AGENTS §11/§14/§17 与 `tests/README.md` 同步。
+
+- **`check_output.py` 非有限数字静默通过**：`json.load` 默认接受 `NaN`/`Infinity`，而 `NaN` 参与的所有比较恒为 `False`——`scene` 计数、`dimensions`、`renders[].std/black_ratio`、`report.vision` 字段注入 `NaN` 时旧闸门 0 ERROR 放行。`_is_number` 改为只接受有限数字，所有数值检查统一走它；`report.vision` 记录值非有限时新增「记录值非有限数字」不一致问题。
+- **`check_output.py` 导出字节数导致闸门崩溃**：`report.exports.*.bytes` 被写成 `NaN`/`inf` 时旧代码 `int(nan)` 抛 `ValueError`、`int(inf)` 抛 `OverflowError`，闸门栈回溯而非报 ERROR；现在先校验有限数字并给出可读 ERROR。
+- **`check_output.py` render 记录与真实文件脱节**：`report.renders[]` 的 `width/height/bytes` 被手改、`scene.dimensions` 与 `bbox_min/bbox_max` 不一致、同一 PNG 被重复统计，旧版全部 0 ERROR 放行；现在分别判 ERROR（`dimensions` 容差 `max(1e-3, 1%)`）。
+- **`check_output.py` 路径越界**：`resolve_out_path` 此前只拒绝对路径/盘符/UNC，`../outside.png` 可指向输出目录外且文件存在即通过；现在用 `abspath + commonpath` 限制在输出目录内，导出的导出路径同样收口。
+- **`check_output.py` 伪造 PNG 在无 Pillow 时通过**：渲染图检查此前只读 33 字节文件头，`IHDR` + 任意填充即可过闸；新增 `_png_structure_problems()`（复用 `vision_probe.structure_issues`）零依赖校验 chunk 长度/CRC/IDAT/IEND，截断/伪造图直接 ERROR——无 Pillow 也有真图校验。
+- **`vision_metrics.analyze_out` 部分坏图与 `check_output` 结论矛盾**：只有部分 PNG 无法解码时，独立 `vision_metrics.py` 仍 `ok=True` 退出 0，而 `check_output` 对同目录报 `VISION009` ERROR；现在 `analyze_out` 也追加 `VISION009` ERROR（含坏文件名/张数），两闸门口径一致，`check_output` 侧去重不重复报。
+- **`doctor.py --json` 输出被污染**：Blender 版本非 4.0 时 `check_blender` 裸 `print` 一行 Blender 路径，`--json` 模式下 stdout 首行不是 JSON（`json.loads` 失败）；改为受 `QUIET` 保护。
+- **`snapshot.py` 结构校验路径越界与 `--rollback --json` 版本为 null**：`validate_version` 对 `report.renders`/`exports` 的路径只拒绝对路径，`../escape.png` 可指向版本目录外；`--rollback` 默认目标 `best` 时 `--json` 的 `version` 字段写成 `None`。现在两处路径统一走 `_inside()`（拒绝绝对路径/盘符/`..`），`--json` 报告实际回滚版本。
+- **文档-代码漂移**：README 首屏/设计原则/常见问题、AGENTS §11 ERROR 表/§16 索引/§17 闸门表、CHANGELOG 同步新脚本与实测数字（34/34、100%）。
 
 ## [1.1.1] - 2026-10-21
 

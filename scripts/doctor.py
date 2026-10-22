@@ -4,6 +4,7 @@
 用法：
     python scripts/doctor.py            # 只检查
     python scripts/doctor.py --smoke    # 额外跑一次 64x64 冒烟渲染（约 1-3 秒）
+    python scripts/doctor.py --vision   # 视觉探针：机器可验证「代理真的看过图」
     python scripts/doctor.py --json     # 以纯 JSON 输出（便于脚本/CI 解析）
 
 检查项（FAIL 会使退出码为 1）：
@@ -13,6 +14,9 @@
 4. 当前工作目录（cwd）可写（真正的输出目录在建目录时验证）
 5. Pillow 是否可用（仅联系表脚本需要，缺失只 WARN）
 6. --smoke：kit 导入 + 建体 + 渲染 + glb/blend 导出端到端可用
+7. --vision：纯标准库 PNG 解码校验 examples/*/renders（可解码 / 尺寸符合
+   report 声明 / 非空白），不需要 Blender 与 Pillow，可在 CI 里证明「交付的
+   渲染图真的能被打开看」而不是只有日志。（对应竞品 Amagine3D 的 doctor --vision）
 """
 
 from __future__ import annotations
@@ -58,6 +62,10 @@ def check_layout():
          os.path.join(bl_common.TEMPLATE_DIR, "edit_model_template.py")),
         ("scripts/run_blender.py", os.path.join(bl_common.SKILL_DIR, "scripts", "run_blender.py")),
         ("scripts/check_output.py", os.path.join(bl_common.SKILL_DIR, "scripts", "check_output.py")),
+        # R9 Phase2：变异闸门基准 + 视觉探针（doctor --vision / CI 依赖）
+        ("scripts/gate_bench.py", os.path.join(bl_common.SKILL_DIR, "scripts", "gate_bench.py")),
+        ("scripts/vision_probe.py",
+         os.path.join(bl_common.SKILL_DIR, "scripts", "vision_probe.py")),
     ]
     for label, path in required:
         if os.path.isfile(path):
@@ -86,7 +94,10 @@ def check_blender():
         record("FAIL", "Blender 版本过低: %s，需要 >=4.0（推荐 4.0.2）" % version["version"])
     elif ver[:2] != (4, 0):
         record("WARN", "Blender 版本 %s 非实测目标 4.0.2，建议先跑 --smoke 验证" % version["version"])
-        print("       Blender: %s" % exe)
+        # R9-B10：这行日志必须受 QUIET 保护，否则 --json 的 stdout 被污染
+        #（json.loads 直接失败，CI/脚本无法解析）。
+        if not QUIET:
+            print("       Blender: %s" % exe)
     else:
         record("PASS", "Blender %s: %s" % (version["version"], exe))
     return exe
@@ -110,6 +121,100 @@ def check_pillow():
         record("PASS", "Pillow 可用（可生成 contact-sheet.png）")
     except ImportError:
         record("WARN", "未安装 Pillow：contact_sheet.py 不可用（可选，不影响建模）")
+
+
+def default_vision_targets():
+    """默认视觉探针目标：仓库内 examples/*/renders（CI 无 Blender 也能跑）。"""
+    targets = []
+    examples = os.path.join(bl_common.SKILL_DIR, "examples")
+    if os.path.isdir(examples):
+        for name in sorted(os.listdir(examples)):
+            out_dir = os.path.join(examples, name)
+            if os.path.isdir(os.path.join(out_dir, "renders")):
+                targets.append(("examples/%s" % name, out_dir, "out"))
+    return targets
+
+
+def _load_vision_probe():
+    try:
+        import importlib
+        return importlib.import_module("vision_probe")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def check_vision(extra_out=(), extra_dir=()):
+    """视觉探针：纯标准库解码 PNG，证明渲染图「真的能被打开看」。
+
+    与 Amagine3D 的 `doctor --vision` 同一目标：不只信日志，用像素级证据
+    校验渲染图存在/可解码/尺寸符合 report 声明/非空白（纯色或近纯色）。
+    不需要 Blender、不需要 Pillow，可在 ubuntu CI 直接跑。
+    返回每个目标的探针 payload 列表（供 --json 汇总）。
+    """
+    module = _load_vision_probe()
+    if module is None:
+        record("FAIL", "视觉探针不可用：scripts/vision_probe.py 导入失败")
+        return []
+    targets = default_vision_targets()
+    for path in extra_out:
+        targets.append((os.path.abspath(path), os.path.abspath(path), "out"))
+    for path in extra_dir:
+        targets.append((os.path.abspath(path), os.path.abspath(path), "dir"))
+    if not targets:
+        record("FAIL", "视觉探针没有目标：未找到 examples/*/renders，"
+                       "可用 --vision-out/--vision-dir 指定")
+        return []
+    payloads = []
+    for label, path, mode in targets:
+        if not os.path.isdir(path):
+            record("FAIL", "视觉探针目标不存在: %s" % path)
+            payloads.append({"label": label, "target": os.path.abspath(path),
+                             "ok": False, "mode": mode, "files": [],
+                             "reasons": ["目标目录不存在"]})
+            continue
+        try:
+            if mode == "dir":
+                payload = module.probe_renders(path)
+            else:
+                payload = module.probe_out_full(path)
+        except Exception as exc:  # noqa: BLE001
+            record("FAIL", "视觉探针执行异常: %s (%r)" % (path, exc))
+            payloads.append({"label": label, "target": os.path.abspath(path),
+                             "ok": False, "mode": mode, "files": [],
+                             "reasons": [repr(exc)]})
+            continue
+        payload["label"] = label
+        payloads.append(payload)
+        files = payload.get("files") or []
+        if payload.get("ok"):
+            sizes = sorted({"%dx%d" % (item.get("width") or 0, item.get("height") or 0)
+                            for item in files if item.get("width")})
+            record("PASS", "视觉探针: %s %d 张图可解码且非空白（%s）"
+                   % (label, len(files), ", ".join(sizes) or "-"))
+        else:
+            reasons = [str(item) for item in (payload.get("reasons") or [])
+                       or ["未识别原因的失败"]]
+            record("FAIL", "视觉探针: %s 未通过：%s"
+                   % (label, "; ".join(reasons[:3])))
+    return payloads
+
+
+def _vision_summary(payloads):
+    summary = []
+    for payload in payloads or []:
+        item = {
+            "label": payload.get("label"),
+            "target": payload.get("target"),
+            "ok": bool(payload.get("ok")),
+            "files": len(payload.get("files") or []),
+            "reasons": payload.get("reasons") or [],
+        }
+        sheet = payload.get("sheet")
+        if isinstance(sheet, dict):
+            item["sheet_ok"] = bool(sheet.get("ok"))
+        summary.append(item)
+    return {"ok": bool(summary) and all(item["ok"] for item in summary),
+            "targets": summary}
 
 
 SMOKE_SCRIPT = textwrap.dedent('''\
@@ -193,6 +298,13 @@ def check_smoke(exe):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Blender 建模技能环境体检（只检查不安装）")
     parser.add_argument("--smoke", action="store_true", help="额外跑一次端到端冒烟渲染")
+    parser.add_argument("--vision", action="store_true",
+                        help="视觉探针：纯标准库校验渲染图可解码/尺寸符合声明/非空白"
+                             "（不需要 Blender 与 Pillow）")
+    parser.add_argument("--vision-out", action="append", default=[], metavar="DIR",
+                        help="额外检查的输出目录（含 renders/ 与 report.json；可重复）")
+    parser.add_argument("--vision-dir", action="append", default=[], metavar="DIR",
+                        help="额外检查的 renders 目录（可重复）")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     args = parser.parse_args(argv)
 
@@ -203,13 +315,23 @@ def main(argv=None):
         print("技能目录: %s" % bl_common.SKILL_DIR)
         print("工作目录: %s\n" % os.getcwd())
 
+    vision_payloads = None
     check_python()
     check_layout()
-    exe = check_blender()
-    check_workspace_write()
-    check_pillow()
-    if args.smoke:
-        check_smoke(exe)
+    if args.vision:
+        # 视觉探针模式不依赖 Blender：CI（ubuntu）也能验证「代理真的看过图」
+        check_pillow()
+        vision_payloads = check_vision(args.vision_out, args.vision_dir)
+        if args.smoke:
+            exe = check_blender()
+            check_workspace_write()
+            check_smoke(exe)
+    else:
+        exe = check_blender()
+        check_workspace_write()
+        check_pillow()
+        if args.smoke:
+            check_smoke(exe)
 
     fails = [m for level, m in RESULTS if level == "FAIL"]
     warns = [m for level, m in RESULTS if level == "WARN"]
@@ -221,6 +343,7 @@ def main(argv=None):
             "skill_dir": bl_common.SKILL_DIR,
             "cwd": os.getcwd(),
             "smoke": bool(args.smoke),
+            "vision": _vision_summary(vision_payloads) if args.vision else None,
             "counts": {"pass": len(passes), "error": len(fails), "warn": len(warns)},
             "items": [{"level": level, "message": message} for level, message in RESULTS],
         }

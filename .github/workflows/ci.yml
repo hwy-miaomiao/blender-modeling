@@ -47,8 +47,21 @@ jobs:
       - name: 版本快照自测
         run: python scripts/snapshot.py --selftest
 
+      - name: PNG 解码视觉探针自测（纯标准库，不需要 Pillow/Blender）
+        run: python scripts/vision_probe.py --selftest
+
+      - name: 变异闸门基准自测（纯文件级，不需要 Blender）
+        run: python scripts/gate_bench.py --selftest
+
       - name: 仓库静态检查（SKILL frontmatter / 示例产物 / GLB 资产 / 文档引用）
         run: python scripts/ci_check.py
+
+      - name: 视觉探针体检（doctor --vision，证明渲染图真的可解码且非空白）
+        run: python scripts/doctor.py --vision
+
+      - name: 变异闸门基准（examples 真实产物，0 逃逸才通过；python 3.12 job）
+        if: matrix.python-version == '3.12'
+        run: python scripts/gate_bench.py
 
       - name: 真实产物视觉闸门（lowpoly-mug，SKIP 必须为 0）
         run: |

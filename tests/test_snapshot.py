@@ -127,6 +127,48 @@ class SnapshotTest(unittest.TestCase):
     def test_validate_best_clean_dir(self):
         self.assertEqual(quiet(snapshot.validate_best, self.out), [])
 
+    # ---- R9 回归：路径越界 / --rollback --json 版本号 ----
+    def test_inside_rejects_escapes(self):
+        self.assertTrue(snapshot._inside(self.out, "renders/view-front.png"))
+        self.assertFalse(snapshot._inside(self.out, "../outside.png"))
+        self.assertFalse(snapshot._inside(self.out, "renders/../../x.png"))
+        self.assertFalse(snapshot._inside(self.out, "F:evil.png"))
+        self.assertFalse(snapshot._inside(
+            self.out, os.path.abspath("renders/view-front.png")))
+
+    def test_validate_version_rejects_render_traversal(self):
+        quiet(snapshot.create_snapshot, self.out)
+        report_path = os.path.join(self.version_dir(), "report.json")
+        report = read_json(report_path)
+        report["renders"][0]["path"] = "../escape.png"
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False)
+        issues, _stats = quiet(snapshot.validate_version, self.version_dir())
+        self.assertTrue(any("越界" in issue for issue in issues), issues)
+        self.assertEqual(quiet(snapshot.promote, self.out, "v1"), 1)
+
+    def test_validate_version_rejects_export_traversal(self):
+        quiet(snapshot.create_snapshot, self.out)
+        report_path = os.path.join(self.version_dir(), "report.json")
+        report = read_json(report_path)
+        report["exports"]["blend"]["path"] = "../escape.blend"
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False)
+        issues, _stats = quiet(snapshot.validate_version, self.version_dir())
+        self.assertTrue(any("越界" in issue for issue in issues), issues)
+
+    def test_rollback_json_reports_actual_version(self):
+        quiet(snapshot.create_snapshot, self.out)
+        capture = io.StringIO()
+        with contextlib.redirect_stdout(capture), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = snapshot.main(["--out", self.out, "--rollback", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(capture.getvalue())
+        self.assertEqual(payload["action"], "rollback")
+        self.assertEqual(payload["version"], "v1")
+        self.assertEqual(payload["exit_code"], 0)
+
 
 class VersionTest(unittest.TestCase):
     def test_canonical_version(self):

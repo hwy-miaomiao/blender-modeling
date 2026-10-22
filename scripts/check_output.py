@@ -72,8 +72,16 @@ MIN_VIEW_SIZE = 64  # 渲染图最小边长（像素），防止 1x1 补零图�
 
 
 def _is_number(value):
-    """数值判断（排除 bool：isinstance(True, int) 为真但不能当统计值）。"""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """有限数值判断（排除 bool；排除 NaN/inf）。
+
+    只判 isinstance 不够：Python 的 json.load 默认接受 NaN/Infinity 字面量，
+    而 NaN 参与任何比较都是 False（`nan <= 4.0`、`abs(nan-x) > tol` 全为 False），
+    会让伪造 report 静默通过所有数值闸门；inf 则会通过「> 下限」类检查。
+    因此所有 report 数值入口统一要求 math.isfinite。
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    return math.isfinite(float(value))
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +222,29 @@ def render_entries(report):
 
 
 def resolve_out_path(out_dir, path):
-    """把 report 里的相对路径解析成绝对路径；绝对路径返回 None（report 必须可移植）。"""
-    if not path:
+    """把 report 里的相对路径解析成绝对路径；越界/绝对路径返回 None。
+
+    report 必须可移植：拒绝绝对路径、盘符路径、UNC 路径，以及 `..` 爬出
+    输出目录的路径（否则 report 可以引用仓库外任意同名图片/文件，闸门会
+    把「输出目录之外的文件存在」误当成「产物存在」而放行）。
+    """
+    if not path or not isinstance(path, str):
         return None
-    text = str(path)
-    if os.path.isabs(text) or re.match(r"^[A-Za-z]:[\\/]", text) or text.startswith("\\\\"):
+    text = path.strip()
+    if not text:
         return None
-    return os.path.join(out_dir, text.replace("/", os.sep))
+    if os.path.isabs(text) or re.match(r"^[A-Za-z]:", text) or text.startswith("\\\\"):
+        return None
+    normalized = text.replace("\\", "/")
+    root = os.path.abspath(out_dir)
+    joined = os.path.abspath(os.path.join(root, normalized.replace("/", os.sep)))
+    try:
+        common = os.path.commonpath([root, joined])
+    except ValueError:  # Windows 不同盘符
+        return None
+    if os.path.normcase(common) != os.path.normcase(root):
+        return None
+    return joined
 
 
 def _export_candidates(out_dir, report, key):
@@ -342,6 +366,27 @@ def check_required_files(checker, out_dir):
             checker.error("model.py 未导入 blender_kit（脚本不可复现）")
 
 
+def _png_structure_problems(path):
+    """用纯 stdlib 视觉探针校验 PNG 结构（截断/缺 IEND/CRC 失败）。
+
+    返回 issue 列表；探针不可导入时返回 None（无法校验，不误报）。
+    只读文件做块级校验，不解码像素（Pillow 缺失时这是唯一能拦住
+    「合法 IHDR + 垃圾字节」伪造渲染图的手段）。
+    """
+    module = _load_sibling("vision_probe")
+    if module is None:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return ["无法读取文件"]
+    try:
+        return module.structure_issues(data)
+    except Exception as exc:  # noqa: BLE001 - 探针自身异常不能打断闸门
+        return ["结构校验异常: %r" % (exc,)]
+
+
 def check_renders(checker, out_dir, min_views):
     renders_dir = os.path.join(out_dir, "renders")
     if not os.path.isdir(renders_dir):
@@ -369,6 +414,14 @@ def check_renders(checker, out_dir, min_views):
         if dims is None:
             checker.error("渲染图不是合法 PNG: %s (%d bytes)" % (name, size))
             continue
+        problems = _png_structure_problems(path)
+        if problems:
+            # R9-B1：只有合法 IHDR 的「假 PNG」（截断/拼接/CRC 损坏）在
+            # Pillow 缺失时能静默通过原来的体积+尺寸检查，这里用块级结构校验拦住。
+            detail = "；".join(problems[:2])
+            checker.error("渲染图 PNG 结构损坏（截断/伪造/CRC 失败）: %s：%s"
+                          % (name, detail))
+            continue
         if dims[0] < MIN_VIEW_SIZE or dims[1] < MIN_VIEW_SIZE:
             checker.error("渲染图尺寸过小: %s (%dx%d < %d)" % (
                 name, dims[0], dims[1], MIN_VIEW_SIZE))
@@ -377,6 +430,20 @@ def check_renders(checker, out_dir, min_views):
         else:
             checker.ok("渲染图: %s %dx%d (%.1f KB)" % (name, dims[0], dims[1], size / 1024.0))
     return pngs
+
+
+def _count_render_pngs(out_dir):
+    """renders/ 下参与交付的 PNG 数量（排除联系表）。"""
+    renders_dir = os.path.join(out_dir, "renders")
+    if not os.path.isdir(renders_dir):
+        return 0
+    try:
+        names = os.listdir(renders_dir)
+    except OSError:
+        return 0
+    return sum(1 for name in names
+               if name.lower().endswith(".png") and name != "contact-sheet.png"
+               and os.path.isfile(os.path.join(renders_dir, name)))
 
 
 def _check_render_stats_consistency(checker, label, entry, path):
@@ -424,6 +491,7 @@ def check_report(checker, out_dir):
             checker.ok("%s: %s" % (label, value))
 
     dims = scene.get("dimensions")
+    dims_valid = False
     if not isinstance(dims, (list, tuple)) or len(dims) != 3:
         checker.error("report.scene.dimensions 必须是 3 个数字: %r" % (dims,))
     else:
@@ -432,9 +500,35 @@ def check_report(checker, out_dir):
         except (TypeError, ValueError):
             positive = False
         if positive:
+            dims_valid = True
             checker.ok("模型尺寸: %.3f x %.3f x %.3f 米" % tuple(float(d) for d in dims))
         else:
-            checker.error("模型尺寸存在非正数或非数字: %r" % (dims,))
+            checker.error("模型尺寸存在非正数、非有限数或非数字: %r" % (dims,))
+
+    # B10 残留：dimensions 必须与 bbox 自洽。只改 dimensions（冒充实物尺寸）或把
+    # inf 塞进 bbox 的伪造 report 都不能只凭「数值 > 0」通过。
+    bbox_min = scene.get("bbox_min")
+    bbox_max = scene.get("bbox_max")
+    if bbox_min is not None or bbox_max is not None:
+        bbox_valid = (isinstance(bbox_min, (list, tuple)) and len(bbox_min) == 3
+                      and isinstance(bbox_max, (list, tuple)) and len(bbox_max) == 3
+                      and all(_is_number(value) for value in bbox_min)
+                      and all(_is_number(value) for value in bbox_max))
+        if not bbox_valid:
+            checker.error("report.scene.bbox_min/bbox_max 必须是各 3 个有限数字:"
+                          " %r / %r" % (bbox_min, bbox_max))
+        elif dims_valid:
+            expected = [abs(float(bbox_max[i]) - float(bbox_min[i]))
+                        for i in range(3)]
+            actual = [float(d) for d in dims]
+            consistent = all(abs(expected[i] - actual[i])
+                             <= max(1e-3, 0.01 * abs(expected[i])) for i in range(3))
+            if consistent:
+                checker.ok("report 尺寸与 bbox 自洽（bbox 跨度 = dimensions）")
+            else:
+                checker.error("report.scene.dimensions 与 bbox_min/bbox_max 不一致"
+                              "（疑似尺寸被改）: dimensions=%r bbox 跨度=%r"
+                              % (dims, [round(value, 6) for value in expected]))
 
     exports = export_paths(report)
     # export_paths 只返回路径字符串；bytes 字段要回原始 exports 记录里取
@@ -451,11 +545,21 @@ def check_report(checker, out_dir):
             continue
         path = resolve_out_path(out_dir, raw)
         if path is None:
-            checker.error("report 的导出路径必须是相对路径: %r" % (raw,))
-        elif os.path.isfile(path):
-            actual = file_size(path)
-            recorded = record.get("bytes") if isinstance(record, dict) else None
-            if _is_number(recorded) and actual >= 0 and int(recorded) != actual:
+            checker.error("report 的导出路径必须是输出目录内的相对路径"
+                          "（禁止绝对路径/盘符/.. 越界）: %r" % (raw,))
+            continue
+        if not os.path.isfile(path):
+            checker.error("report 缺少 %s 导出记录或文件不存在: %r" % (key, raw))
+            continue
+        actual = file_size(path)
+        recorded = record.get("bytes") if isinstance(record, dict) else None
+        if isinstance(record, dict) and "bytes" in record:
+            if not _is_number(recorded):
+                # R9-B2：旧实现走 int(nan) 会抛 ValueError/OverflowError 直接崩，
+                # 闸门退出码变成 traceback；非有限值本身也是伪造信号，必须 ERROR。
+                checker.error("report 记录的 %s bytes 不是有限数字（NaN/inf/非数值）: %r"
+                              % (key, recorded))
+            elif int(recorded) != actual:
                 # 旧版 report 的 bytes 可能陈旧（甚至只更新了文件没更新字段），
                 # 按 AGENTS「WARN 可带过」口径：只 WARN，不阻断交付。
                 checker.warn(
@@ -465,34 +569,78 @@ def check_report(checker, out_dir):
             else:
                 checker.ok("report 记录导出 %s" % key)
         else:
-            checker.error("report 缺少 %s 导出记录或文件不存在: %r" % (key, raw))
+            checker.ok("report 记录导出 %s" % key)
 
     entries = render_entries(report)
     if not entries:
         checker.error("report.renders 为空：缺少渲染统计，无法判定是否全黑")
         return
+    actual_pngs = _count_render_pngs(out_dir)
+    if actual_pngs and len(entries) != actual_pngs:
+        checker.warn("report.renders 记录数 %d 与 renders/ 实际 PNG 数 %d 不一致"
+                     "（可能漏记/多记，渲染统计覆盖不完整）"
+                     % (len(entries), actual_pngs))
+    seen_paths = set()
     for entry in entries:
         Path = entry.get("path") or entry.get("file")
+        label = os.path.basename(str(Path)) if Path else "?"
+        # R9-B3：JSON 允许 NaN/Infinity 字面量；旧 _is_number 放行后，
+        # std=NaN / black_ratio=NaN 会因为比较恒为 False 而静默通过。
+        bad_fields = set()
+        for field in ("mean", "std", "black_ratio", "width", "height", "bytes"):
+            if field in entry and not _is_number(entry.get(field)):
+                checker.error("report.renders 的 %s 不是有限数字（NaN/inf/非数值）: %r（%s）"
+                              % (field, entry.get(field), label))
+                bad_fields.add(field)
         std = entry.get("std")
         black_ratio = entry.get("black_ratio")
-        label = os.path.basename(str(Path)) if Path else "?"
-        if not _is_number(std):
-            checker.error("渲染统计缺少 std（%s）" % label)
-        elif float(std) <= MIN_STD:
-            checker.error("渲染图疑似纯色/全黑（std=%.2f <= %.1f）: %s" % (float(std), MIN_STD, label))
-        else:
-            checker.ok("渲染统计正常: %s std=%.1f" % (label, float(std)))
-        if not _is_number(black_ratio):
-            checker.error("渲染统计缺少 black_ratio（%s）" % label)
-        elif float(black_ratio) >= MAX_BLACK_RATIO:
-            checker.error("渲染图黑像素占比过高（%.3f）: %s" % (float(black_ratio), label))
+        if "std" not in bad_fields:
+            if not _is_number(std):
+                checker.error("渲染统计缺少 std（%s）" % label)
+            elif float(std) <= MIN_STD:
+                checker.error("渲染图疑似纯色/全黑（std=%.2f <= %.1f）: %s"
+                              % (float(std), MIN_STD, label))
+            else:
+                checker.ok("渲染统计正常: %s std=%.1f" % (label, float(std)))
+        if "black_ratio" not in bad_fields:
+            if not _is_number(black_ratio):
+                checker.error("渲染统计缺少 black_ratio（%s）" % label)
+            elif float(black_ratio) >= MAX_BLACK_RATIO:
+                checker.error("渲染图黑像素占比过高（%.3f）: %s"
+                              % (float(black_ratio), label))
         resolved = resolve_out_path(out_dir, Path)
         if resolved is None:
-            checker.error("渲染统计里的路径必须是相对路径: %r" % (Path,))
-        elif not os.path.isfile(resolved):
+            checker.error("渲染统计里的路径必须是输出目录内的相对路径"
+                          "（禁止绝对路径/盘符/.. 越界）: %r" % (Path,))
+            continue
+        if not os.path.isfile(resolved):
             checker.error("渲染统计记录的文件不存在: %s" % resolved)
+            continue
+        norm = os.path.normcase(resolved)
+        if norm in seen_paths:
+            checker.error("report.renders 存在重复记录（同一文件被重复统计）: %s"
+                          % resolved)
         else:
-            _check_render_stats_consistency(checker, label, entry, resolved)
+            seen_paths.add(norm)
+        # R9-B3：report 记录的宽高/字节数必须与实际 PNG 一致（只改数字伪造统计
+        # 不能让闸门误以为渲染图是另一张）。
+        actual_dims = png_size(resolved)
+        if actual_dims:
+            for field, actual_value in (("width", actual_dims[0]),
+                                        ("height", actual_dims[1])):
+                if field in entry and field not in bad_fields:
+                    if int(float(entry[field])) != actual_value:
+                        checker.error(
+                            "report.renders 记录的 %s=%s 与实际 PNG %dx%d 不符: %s"
+                            % (field, entry[field], actual_dims[0], actual_dims[1],
+                               label))
+            if "bytes" in entry and "bytes" not in bad_fields:
+                actual_size = file_size(resolved)
+                if int(float(entry["bytes"])) != actual_size:
+                    checker.error(
+                        "report.renders 记录的 bytes=%s 与实际文件 %d 不符: %s"
+                        % (entry["bytes"], actual_size, label))
+        _check_render_stats_consistency(checker, label, entry, resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -556,12 +704,17 @@ def check_vision(checker, out_dir, pngs, no_vision=False):
     if skipped:
         # R3-B1：只坏一部分时，视觉指标覆盖不到全部视角，等同降低验收覆盖，
         # 不允许作为 WARN 带过。信息里写清是哪几张图。
-        names = ", ".join(skipped[:4])
-        if len(skipped) > 4:
-            names += " 等 %d 张" % len(skipped)
-        checker.error("视觉闸门: 部分渲染图无法解码（VISION009）：%d/%d 张（%s），"
-                      "视觉指标无法覆盖全部视角，禁止交付（请重渲这些图）"
-                      % (len(skipped), len(pngs), names))
+        # R9-B4：vision_metrics.analyze_out 现在也会产出 VISION009；这里只在
+        # 独立分析结果没有该代码时补充（避免同一问题报两次 ERROR）。
+        already = any(item.get("code") == "VISION009"
+                      for item in analysis.get("issues", []))
+        if not already:
+            names = ", ".join(skipped[:4])
+            if len(skipped) > 4:
+                names += " 等 %d 张" % len(skipped)
+            checker.error("视觉闸门: 部分渲染图无法解码（VISION009）：%d/%d 张（%s），"
+                          "视觉指标无法覆盖全部视角，禁止交付（请重渲这些图）"
+                          % (len(skipped), len(pngs), names))
     for view in analysis.get("views", []):
         margins = view.get("margins") or {}
         margin_min = min(margins.values()) if margins else 0.0
@@ -570,7 +723,11 @@ def check_vision(checker, out_dir, pngs, no_vision=False):
                       view["bottom_gap"] * 100, view["luminance"]["mean"],
                       view["luminance"]["std"]))
     for issue in analysis.get("issues", []):
-        message = "视觉闸门: %s %s" % (issue.get("file") or "-", issue["message"])
+        # 带上错误代码（VISION001-009），让日志/CI 能直接引用「命中哪个闸门」，
+        # gate_bench.py 的「变异→错误码」表也依赖这个前缀。
+        code = issue.get("code") or "-"
+        message = "视觉闸门: [%s] %s %s" % (code, issue.get("file") or "-",
+                                            issue["message"])
         if issue["level"] == "ERROR":
             checker.error(message)
         else:
@@ -617,6 +774,11 @@ def _vision_mismatches(recorded, measured):
                              ("bottom_gap", VISION_TOLERANCE)):
         old = recorded.get(field)
         new = measured.get(field)
+        if field in recorded and not _is_number(old):
+            # R9-B1：report.vision 里塞 NaN/inf（json 允许这两个字面量）时，
+            # 旧实现因 _is_number 为假直接跳过比较，等于静默放行。
+            problems.append("%s 记录值不是有限数字: %r" % (field, old))
+            continue
         if _is_number(old) and _is_number(new) and abs(float(old) - float(new)) > tolerance:
             problems.append("%s 记录=%.3f 实测=%.3f" % (field, float(old), float(new)))
     old_margins = recorded.get("margins")
@@ -625,6 +787,9 @@ def _vision_mismatches(recorded, measured):
         for side in ("left", "right", "top", "bottom"):
             old = old_margins.get(side)
             new = new_margins.get(side)
+            if side in old_margins and not _is_number(old):
+                problems.append("margins.%s 记录值不是有限数字: %r" % (side, old))
+                continue
             if _is_number(old) and _is_number(new) and abs(float(old) - float(new)) > VISION_TOLERANCE:
                 problems.append("margins.%s 记录=%.3f 实测=%.3f"
                                 % (side, float(old), float(new)))
@@ -634,6 +799,9 @@ def _vision_mismatches(recorded, measured):
         for field in ("mean", "std"):
             old = old_lum.get(field)
             new = new_lum.get(field)
+            if field in old_lum and not _is_number(old):
+                problems.append("luminance.%s 记录值不是有限数字: %r" % (field, old))
+                continue
             if _is_number(old) and _is_number(new) and abs(float(old) - float(new)) > 2.0:
                 problems.append("luminance.%s 记录=%.1f 实测=%.1f"
                                 % (field, float(old), float(new)))
@@ -786,13 +954,27 @@ _TINY_PNG = bytes.fromhex(
 )
 
 
-def _png_header(width, height):
-    """生成一个只有 IHDR 的合法 PNG 头（用于自测构造任意尺寸的假图）。"""
+def _png_chunk(ctype, payload):
+    """自测用：拼一个带正确 CRC 的 PNG 块。"""
+    import zlib
+    return (struct.pack(">I", len(payload)) + ctype + payload
+            + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF))
+
+
+def _png_header(width, height, complete=True):
+    """生成自测用 PNG 头。
+
+    complete=True 时带空 IDAT + IEND（结构完整、CRC 合法，但像素解不出来），
+    check_output 的结构校验会放行、Pillow 重算统计会静默降级；
+    complete=False 时只有 IHDR（用于测试「截断/伪造 PNG 必须被拦截」）。
+    """
     import zlib
     ihdr = struct.pack(">IIBBBBB", int(width), int(height), 8, 6, 0, 0, 0)
-    chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(
-        ">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
-    return PNG_MAGIC + chunk
+    data = PNG_MAGIC + _png_chunk(b"IHDR", ihdr)
+    if complete:
+        data += _png_chunk(b"IDAT", zlib.compress(b""))
+        data += _png_chunk(b"IEND", b"")
+    return data
 
 
 def selftest():
@@ -1112,6 +1294,193 @@ def selftest():
         tampered_lum["luminance"] = {"mean": 120.0, "std": 30.0}
         expect("亮度偏差超容差能被发现",
                bool(_vision_mismatches(recorded_view, tampered_lum)))
+
+        # ---- R9 回归：坏数字/坏路径/伪造统计/伪造 PNG 不得静默通过 ----
+        # B1：JSON 允许 NaN/Infinity 字面量，闸门必须先拦下非有限数字。
+        expect("_is_number 拒绝 NaN", not _is_number(float("nan")))
+        expect("_is_number 拒绝 inf", not _is_number(float("inf")))
+        expect("_is_number 拒绝字符串", not _is_number("12"))
+        expect("_is_number 拒绝 bool", not _is_number(True))
+        expect("_is_number 接受 0", _is_number(0))
+
+        # B5：'..' 越界必须被判为非法相对路径（旧实现直接 join 后放行）。
+        expect("resolve_out_path 拒绝 .. 越界",
+               resolve_out_path(tmp, "../evil.png") is None)
+        expect("resolve_out_path 拒绝深层 .. 越界",
+               resolve_out_path(tmp, "renders/../../evil.png") is None)
+        expect("resolve_out_path 接受目录内子路径",
+               resolve_out_path(tmp, "renders/sub/x.png") is not None)
+
+        # B2：bytes=NaN/inf 旧实现 int(nan) 抛异常，闸门崩成 traceback。
+        nan_export = build_out("out-export-nan", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, {"blend": {"path": "exports/model.blend", "bytes": float("nan")},
+            "glb": {"path": "exports/model.glb", "bytes": float("inf")}})
+        crashed = False
+        try:
+            nan_export_result = run_checks(nan_export, min_views=1, vision=False)
+        except (ValueError, OverflowError):
+            crashed = True
+            nan_export_result = None
+        expect("bytes=NaN/inf 不让闸门崩溃", not crashed)
+        expect("bytes=NaN/inf 必须 ERROR",
+               nan_export_result is not None and nan_export_result.failed)
+
+        # B1/B3：renders 的 std/black_ratio=NaN、记录宽高/字节被篡改都必须 ERROR。
+        fake_renders = [{
+            "path": "renders/view-front.png", "mean": 120.0,
+            "std": float("nan"), "black_ratio": float("inf"),
+            "width": 1024, "height": 1024, "bytes": 999,
+        }]
+        fake = build_out("out-fake-stats", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, canonical_exports, extra_report={"renders": fake_renders})
+        fake_result = run_checks(fake, min_views=1, vision=False)
+        fake_messages = [message for _level, message in fake_result.items]
+        expect("renders 统计 NaN/inf 必须 ERROR",
+               any("不是有限数字" in message for message in fake_messages))
+        expect("renders 记录宽高与实际 PNG 不符必须 ERROR",
+               any("width=1024" in message and "不符" in message
+                   for message in fake_messages))
+        expect("renders 记录 bytes 与实际文件不符必须 ERROR",
+               any("bytes=999" in message and "不符" in message
+                   for message in fake_messages))
+
+        # B4：dimensions=inf 或与 bbox 不自洽都不能冒充实物尺寸。
+        inf_dims = build_out("out-dims-inf", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, canonical_exports,
+            extra_report={"dimensions": [float("inf"), 1.0, 1.0]})
+        expect("dimensions 含 inf 必须 ERROR",
+               run_checks(inf_dims, min_views=1, vision=False).failed)
+
+        bad_bbox = build_out("out-bbox", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, canonical_exports,
+            extra_report={"bbox_min": [0, 0, 0],
+                          "bbox_max": [2.0, 1.0, 1.0],
+                          "dimensions": [1.0, 1.0, 1.0]})
+        bbox_result = run_checks(bad_bbox, min_views=1, vision=False)
+        expect("dimensions 与 bbox 不自洽必须 ERROR",
+               any("不一致" in message for _level, message in bbox_result.items))
+        inf_bbox = build_out("out-bbox-inf", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, canonical_exports,
+            extra_report={"bbox_min": [0, 0, 0],
+                          "bbox_max": [float("inf"), 1.0, 1.0],
+                          "dimensions": [1.0, 1.0, 1.0]})
+        expect("bbox 含 inf 必须 ERROR",
+               run_checks(inf_bbox, min_views=1, vision=False).failed)
+
+        # B5：渲染统计路径 ../ 越界必须 ERROR（旧实现会检查目录外文件）。
+        traversal = build_out("out-traversal", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, canonical_exports,
+            extra_report={"renders": [{
+                "path": "../outside.png", "std": 20.0, "black_ratio": 0.1}]})
+        expect("渲染统计路径 ../ 越界必须 ERROR",
+               run_checks(traversal, min_views=1, vision=False).failed)
+
+        # B7：同一渲染图被重复记录（多记一条凑数）必须 ERROR。
+        duplicate = build_out("out-duplicate", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, canonical_exports,
+            extra_report={"renders": [
+                {"path": "renders/view-front.png", "std": 20.0, "black_ratio": 0.1},
+                {"path": "renders/view-front.png", "std": 20.0, "black_ratio": 0.1},
+            ]})
+        expect("report.renders 重复记录必须 ERROR",
+               run_checks(duplicate, min_views=1, vision=False).failed)
+
+        # B6：只有合法 IHDR 的「假 PNG」（渲染图截断/伪造）必须 ERROR。
+        truncated = build_out("out-truncated-png", {
+            "exports/model.blend": BLEND_MAGIC + b"\x00" * 2048,
+            "exports/model.glb": GLB_MAGIC + b"\x00" * 1024,
+        }, canonical_exports)
+        with open(os.path.join(truncated, "renders", "view-front.png"), "wb") as fh:
+            fh.write(_png_header(512, 512, complete=False) + b"\x00" * (16 * 1024))
+        truncated_result = run_checks(truncated, min_views=1, vision=False)
+        expect("截断/伪造 PNG 必须 ERROR",
+               any("PNG 结构损坏" in message
+                   for _level, message in truncated_result.items))
+
+        # B8：视觉闸门的 ERROR/WARN 文案必须带 VISION0xx 代码（便于 CI/日志定位）。
+        class _StubVisionIssues(object):
+            @staticmethod
+            def pillow_available():
+                return True
+
+            @staticmethod
+            def analyze_out(_out_dir):
+                return {
+                    "views": [{
+                        "file": "view-front.png", "subject_ratio": 0.2,
+                        "background_ratio": 0.8, "bottom_gap": 0.2,
+                        "margins": {"left": 0.2, "right": 0.2,
+                                    "top": 0.2, "bottom": 0.2},
+                        "luminance": {"mean": 120.0, "std": 30.0},
+                    }],
+                    "skipped": [],
+                    "issues": [{"level": "ERROR", "code": "VISION001",
+                                "file": "view-front.png", "message": "主体占比过小"}],
+                }
+
+        try:
+            globals()["_load_sibling"] = lambda name: (
+                _StubVisionIssues if name == "vision_metrics"
+                else original_loader(name))
+            code_checker = Checker()
+            check_vision(code_checker, bad_png, ["view-front.png"])
+        finally:
+            globals()["_load_sibling"] = original_loader
+        expect("视觉闸门文案带 VISION 错误码",
+               any("[VISION001]" in message for _level, message in code_checker.items))
+
+        # R9：report.vision 里注入 NaN 也必须报不一致（旧比较 abs(nan)>tol 恒 False）。
+        nan_vision_view = dict(recorded_view)
+        nan_vision_view["subject_ratio"] = float("nan")
+        expect("report.vision NaN 字段必须报不一致",
+               bool(_vision_mismatches(nan_vision_view, measured_view)))
+
+        # R9：vision_metrics 自己产出 VISION009 后，check_vision 不能重复报两条。
+        class _StubVision009(object):
+            @staticmethod
+            def pillow_available():
+                return True
+
+            @staticmethod
+            def analyze_out(_out_dir):
+                return {
+                    "views": [{
+                        "file": "view-front.png", "subject_ratio": 0.2,
+                        "background_ratio": 0.8, "bottom_gap": 0.2,
+                        "margins": {"left": 0.2, "right": 0.2,
+                                    "top": 0.2, "bottom": 0.2},
+                        "luminance": {"mean": 120.0, "std": 30.0},
+                    }],
+                    "skipped": ["view-right.png"],
+                    "issues": [{"level": "ERROR", "code": "VISION009",
+                                "file": "view-right.png",
+                                "message": "部分渲染图无法解码"}],
+                }
+
+        try:
+            globals()["_load_sibling"] = lambda name: (
+                _StubVision009 if name == "vision_metrics" else original_loader(name))
+            duplicate_checker = Checker()
+            check_vision(duplicate_checker, bad_png, ["view-front.png"])
+        finally:
+            globals()["_load_sibling"] = original_loader
+        expect("VISION009 不重复报两条",
+               sum(1 for _level, message in duplicate_checker.items
+                   if "VISION009" in message) == 1)
 
     if failures:
         print("\nSELFTEST FAILED: %d 项失败" % len(failures))

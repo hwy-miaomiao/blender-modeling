@@ -29,7 +29,8 @@ Pillow 缺失时所有计算函数返回 None，调用方应 SKIP 而不是报�
 的可选依赖约定一致）。退出码：0 = 无 ERROR 级视觉问题（或 SKIP），1 = 有 ERROR。
 
 「无法判定」不等于「通过」：renders/ 下明明有 PNG、Pillow 也可用，却一张都解不出来
-时记 VISION008 ERROR（文件损坏 / 伪造），闸门不能默认放行。
+时记 VISION008 ERROR（文件损坏 / 伪造）；只有部分图解不出来时记 VISION009 ERROR
+（指标只覆盖部分视角，与 check_output.py 的交付闸门口径一致），两种都不许静默放行。
 
 --write 用「临时文件 + os.replace」原子覆盖 report.json（进程中断不会留下半个文件）。
 手工给存量项目补写时 vision 会带 backfill=true / backfilled_at 标记，check_output.py
@@ -404,6 +405,16 @@ def analyze_out(out_dir):
             "message": "renders/ 下的 %d 张 PNG 全部无法解码（文件损坏或伪造，"
                        "拒绝 SKIP）" % len(names),
         })
+    # R9-B4：只坏一部分时，指标只覆盖剩余视角却仍报 ok=True，独立 CLI 会以
+    # 退出码 0 放行；与 check_output.py 的 VISION009 ERROR 口径保持一致。
+    if skipped and result["views"] and pillow_available():
+        result["issues"].append({
+            "level": "ERROR", "code": "VISION009", "metric": "renders",
+            "file": "",
+            "message": "部分渲染图无法解码（renders/ 下 %d/%d 张：%s），视觉指标"
+                       "只覆盖部分视角，禁止视为通过"
+                       % (len(skipped), len(names), ", ".join(skipped[:4])),
+        })
     result["totals"] = _totals(result["views"])
     result["ok"] = not any(item["level"] == "ERROR" for item in result["issues"])
     if not names:
@@ -592,6 +603,31 @@ def selftest():
                    and any(item["code"] == "VISION008" for item in bad["issues"]))
     else:
         print("[SKIP] selftest: 未安装 Pillow，跳过 VISION008 用例（可选依赖）")
+
+    # 8b) 只有部分渲染图坏掉 -> VISION009（指标只覆盖部分视角，独立 CLI 不能报 ok）
+    if pillow_available():
+        with tempfile.TemporaryDirectory(prefix="bm-vision-selftest-") as tmp:
+            renders = os.path.join(tmp, "renders")
+            os.makedirs(renders)
+            from PIL import Image
+            image = Image.new("RGB", (64, 64))
+            for y in range(64):
+                for x in range(64):
+                    image.putpixel((x, y), (40 + y, 40 + y, 40 + y))
+            for y in range(20, 44):
+                for x in range(20, 44):
+                    image.putpixel((x, y), (10, 10, 10))
+            image.save(os.path.join(renders, "view-front.png"))
+            with open(os.path.join(renders, "view-right.png"), "wb") as handle:
+                handle.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+            partial = analyze_out(tmp)
+            expect("部分渲染图无法解码时报 VISION009（独立 CLI 不得 ok）",
+                   not partial["ok"]
+                   and partial.get("skipped") == ["view-right.png"]
+                   and any(item["code"] == "VISION009"
+                           for item in partial["issues"]))
+    else:
+        print("[SKIP] selftest: 未安装 Pillow，跳过 VISION009 用例（可选依赖）")
 
     # 9) report.json 原子写：成功后不残留 .tmp，内容可解析
     with tempfile.TemporaryDirectory(prefix="bm-vision-selftest-") as tmp:

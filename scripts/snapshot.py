@@ -129,6 +129,25 @@ def snapshot_path(out_dir, version):
     return os.path.join(out_dir, HISTORY_DIR, canonical_version(version) or "")
 
 
+def _inside(base, rel):
+    """相对路径解析后是否仍位于 base 内（拦绝对路径/盘符/'..' 越界）。
+
+    R9-B12：旧实现只判 os.path.isabs，'../outside.png' 会把校验指向版本目录
+    之外的文件；错误导出的 report 也能借 '..' 绕过结构自检。
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        return False
+    normalized = rel.replace("\\", "/")
+    if os.path.isabs(rel) or re.match(r"^[A-Za-z]:", normalized):
+        return False
+    base_abs = os.path.abspath(base)
+    target = os.path.abspath(os.path.join(base_abs, normalized))
+    try:
+        return os.path.commonpath([base_abs, target]) == base_abs
+    except ValueError:  # 不同盘符
+        return False
+
+
 def validate_version(version_dir):
     """校验单个版本目录的结构一致性，返回 (issues, stats)。"""
     issues = []
@@ -174,8 +193,9 @@ def validate_version(version_dir):
             issues.append("report.renders 条目缺少 path")
             continue
         normalized = rel.replace("\\", "/")
-        if os.path.isabs(rel) or re.match(r"^[A-Za-z]:", normalized):
-            issues.append("report.renders 的 path 必须是相对路径: %r" % rel)
+        if not _inside(version_dir, normalized):
+            issues.append("report.renders 的 path 必须是版本目录内的相对路径"
+                          "（禁止绝对路径/盘符/.. 越界）: %r" % rel)
             continue
         if not os.path.isfile(os.path.join(version_dir, normalized)):
             issues.append("渲染统计记录的文件不存在: %r" % rel)
@@ -192,8 +212,9 @@ def validate_version(version_dir):
             rel = entry.get("path") if isinstance(entry, dict) else None
             if not isinstance(rel, str) or not rel:
                 issues.append("report.exports 缺少 %s 记录" % key)
-            elif os.path.isabs(rel):
-                issues.append("report.exports.%s 的 path 必须是相对路径" % key)
+            elif not _inside(version_dir, rel):
+                issues.append("report.exports.%s 的 path 必须是相对路径"
+                              "（禁止绝对路径/盘符/.. 越界）: %r" % (key, rel))
     return issues, stats
 
 
@@ -506,6 +527,46 @@ def selftest():
         expect("validate_best 能发现 renders 不一致",
                any(issue["code"] == "SNAP004" for issue in snap_issues))
 
+        # R9-B12：路径越界必须被结构自检拦截（绝对路径/盘符/'..'）
+        expect("_inside 接受版本目录内相对路径",
+               _inside(out, "renders/view-front.png"))
+        expect("_inside 拦截 '..' 越界", not _inside(out, "../outside.png"))
+        expect("_inside 拦截盘符相对路径", not _inside(out, "F:evil.png"))
+        expect("_inside 拦截绝对路径",
+               not _inside(out, os.path.abspath("renders/view-front.png")))
+        trav = os.path.join(tmp, "trav")
+        os.makedirs(trav)
+        _write_test_out(trav)
+        expect("遍历用例 v1 创建成功", create_snapshot(trav)["ok"])
+        trav_report_path = os.path.join(trav, HISTORY_DIR, "v1", REPORT_FILE)
+        trav_report = _read_json(trav_report_path)
+        trav_report["renders"][0]["path"] = "../escape.png"
+        with open(trav_report_path, "w", encoding="utf-8") as handle:
+            json.dump(trav_report, handle, ensure_ascii=False, indent=2)
+        expect("validate_version 拦截 renders 的 '..' 越界",
+               any("越界" in issue for issue in
+                   validate_version(os.path.join(trav, HISTORY_DIR, "v1"))[0]))
+        trav_report["renders"][0]["path"] = "renders/view-front.png"
+        trav_report["exports"]["blend"]["path"] = "../escape.blend"
+        with open(trav_report_path, "w", encoding="utf-8") as handle:
+            json.dump(trav_report, handle, ensure_ascii=False, indent=2)
+        expect("validate_version 拦截 exports 的 '..' 越界",
+               any("越界" in issue for issue in
+                   validate_version(os.path.join(trav, HISTORY_DIR, "v1"))[0]))
+
+        # R9-B11：--rollback --json 的 version 必须是实际回滚到的版本
+        rollback_stdout = io.StringIO()
+        with contextlib.redirect_stdout(rollback_stdout), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rollback_code = main(["--out", out, "--rollback", "--json"])
+        try:
+            rollback_payload = json.loads(rollback_stdout.getvalue())
+        except ValueError:
+            rollback_payload = None
+        expect("--rollback --json 输出纯 JSON 且 version=v1",
+               rollback_code == 0 and isinstance(rollback_payload, dict)
+               and rollback_payload.get("version") == "v1")
+
         # list 行数据
         rows = list_versions(out)
         expect("list 返回两个版本", len(rows) == 2)
@@ -580,9 +641,17 @@ def main(argv=None):
                        "exit_code": code}
         elif args.rollback is not None:
             version = None if args.rollback == "best" else args.rollback
+            # R9-B11：--rollback --json 的 version 必须是实际回滚到的版本，
+            # 旧实现用 canonical_version("best") 得到 None，成功却报 version:null。
+            if version is None:
+                best = _read_json(os.path.join(out_dir, BEST_FILE))
+                reported = (canonical_version(best.get("version"))
+                            if isinstance(best, dict) else None)
+            else:
+                reported = canonical_version(version)
             code = rollback(out_dir, version)
             payload = {"ok": code == 0, "action": "rollback",
-                       "version": canonical_version(args.rollback),
+                       "version": reported,
                        "exit_code": code}
         else:
             result = create_snapshot(out_dir)

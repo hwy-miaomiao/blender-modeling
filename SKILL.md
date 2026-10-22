@@ -18,7 +18,7 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 
 ## 最小工作流（细节以 AGENTS.md 为准）
 
-0. 环境体检：`python scripts/doctor.py`（有 FAIL 先按提示修环境，再开工）
+0. 环境体检：`python scripts/doctor.py`（有 FAIL 先按提示修环境，再开工；纯文件级视觉探针可加 `--vision`，零依赖验证渲染图真的可解码/尺寸对/非空白）
 1. 解析提示词 → 写建模简报 `<输出目录>/brief.md`（默认不问用户，把假设写清楚）
 2. 复制 `templates/model_template.py` 为 `<输出目录>/model.py`，用 `lib/blender_kit.py` 的 API 实现建模
 3. build 自检：`python scripts/run_blender.py --script <输出目录>/model.py --out <输出目录> --stage build`
@@ -28,6 +28,8 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 6. 终渲导出：`--stage full` → blend/glb + 最终渲染图 + `report.json`
 7. 交付闸门：`python scripts/check_output.py --out <输出目录>` + `python scripts/safe_check.py <输出目录>/model.py`
 8. 向用户交付：文件路径、怎么看预览、还能怎么改
+
+> **改闸门/想证明闸门有效时**：`python scripts/gate_bench.py` 对 `examples/` 两个合格产物做 17 种确定性变异（共 34 条），逐条交给 `check_output` / `vision_metrics` / `vision_probe` 判定，输出「变异 → 是否被拦 → 命中错误码」与抓取率；有逃逸 exit 1。本机实测 34/34 拦截、100%。单张渲染图存疑时用 `python scripts/vision_probe.py --dir <输出目录>/renders` 零依赖定位到具体文件与原因。
 
 > **改已有模型（模式 B）**：不是从第 1 步开始——用 `templates/edit_model_template.py` 复制出 `model.py`，通过 `--blend <源.blend>` 打开现成模型，只填 `EDITS` 字典，然后同样走 build → render → full → 闸门。详见 `AGENTS.md` 第 10.5 节。
 
@@ -47,7 +49,7 @@ description: 用本机 Blender（headless bpy 脚本）把自然语言提示词�
 | `references/modeling-recipes.md` | 阶段 3：常见题材的部件拆解与代码骨架 |
 | `references/architecture-modeling.md` 等 4 篇 | 阶段 2-3：建筑 / 人物 / 动物 / 植物题材专用——结构拆解、真实比例尺寸表、技巧库、配方与实测记录（`architecture-modeling.md`、`character-modeling.md`、`animal-modeling.md`、`plant-modeling.md`） |
 | `references/bpy-cookbook.md` | 阶段 3-4：bpy 4.0 实测 API 与坑 |
-| `references/render-and-check.md` | 阶段 5-6：相机灯光参数与看图自检清单 |
+| `references/render-and-check.md` | 阶段 5-6：相机灯光参数与看图自检清单；含 `vision_probe.py` / `gate_bench.py` 的「可机器验证」用法 |
 | `references/troubleshooting.md` | 报错时查：症状 / 原因 / 解决 |
 | `references/export-and-integration.md` | 导出和接引擎：格式怎么选、单位与坐标系、Three.js/Unity/UE/3D 打印 |
 | `templates/edit_model_template.py` | 模式 B：改已有 `.blend` 的模板与 `EDITS` 写法 |

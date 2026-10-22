@@ -141,6 +141,10 @@ class AnalyzeOutTest(unittest.TestCase):
         self.assertEqual(len(result["views"]), 1)
         self.assertIn("view-bad.png", result.get("skipped", []))
         self.assertNotIn("VISION008", codes_of(result["issues"]))
+        # R9-B9：部分坏图时独立 CLI 的 ok 不能仍为 True（与 check_output 的
+        # VISION009 ERROR 口径一致），必须给出 VISION009 并失败。
+        self.assertIn("VISION009", codes_of(result["issues"]))
+        self.assertFalse(result["ok"])
 
     def test_analyze_image_missing_file_returns_none(self):
         missing = os.path.join(os.path.dirname(os.path.abspath(__file__)), "no-such-render.png")

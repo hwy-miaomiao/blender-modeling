@@ -77,14 +77,23 @@ class ReportBytesConsistencyTests(unittest.TestCase):
         self.assertEqual(len(warnings), 2, warnings)
         self.assertTrue(all("bytes" in m for m in warnings), warnings)
 
-    def test_missing_or_string_bytes_tolerated(self):
-        records = {
+    def test_missing_bytes_tolerated_string_bytes_rejected(self):
+        # 缺 bytes 字段：容忍（旧产物兼容）；但「字符串冒充数字」必须 ERROR ——
+        # R9-B2 之后闸门不允许非有限/非数值的 bytes 静默通过。
+        missing = self._run({
+            "blend": {"path": "exports/model.blend"},
+            "glb": {"path": "exports/model.glb"},
+        })
+        self.assertFalse(missing.failed)
+        self.assertEqual([m for lv, m in missing.items if lv == "WARN"], [])
+
+        string_bytes = self._run({
             "blend": {"path": "exports/model.blend"},
             "glb": {"path": "exports/model.glb", "bytes": "456"},
-        }
-        result = self._run(records)
-        self.assertFalse(result.failed)
-        self.assertEqual([m for lv, m in result.items if lv == "WARN"], [])
+        })
+        self.assertTrue(string_bytes.failed)
+        errors = [m for lv, m in string_bytes.items if lv == "ERROR"]
+        self.assertTrue(any("有限数字" in message for message in errors), errors)
 
 
 if __name__ == "__main__":

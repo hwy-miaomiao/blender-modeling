@@ -210,6 +210,16 @@ python scripts/contact_sheet.py --out "$OUT"
 python scripts/check_output.py --out "$OUT" --min-views 4
 ```
 
+**可机器验证「看过」与「闸门有效」（第 9 轮新增，纯标准库、不依赖 Blender/Pillow）**
+
+| 工具 | 命令 | 证明什么 |
+| --- | --- | --- |
+| `vision_probe.py` | `python scripts/vision_probe.py --out "$OUT"`（或 `--dir "$OUT\renders"`） | 渲染图**真的可解码**（chunk 长度/CRC/IDAT/IEND）、像素尺寸与 `report.json.renders` 声明一致、非空白（唯一色 ≥8 且亮度 std ≥2）；存在联系表时校验版式/格数/尺寸。人读表 + `--json` 判决 `{ok,files,reasons}`，失败 exit 1。怀疑某张图坏了先跑 `--dir` 定位到具体文件与原因 |
+| `doctor.py --vision` | `python scripts/doctor.py --vision` | 把同一探针接进环境体检（默认目标 `examples/*/renders`，可 `--vision-out`/`--vision-dir` 追加自己的输出目录），0 FAIL 才算「看过了」 |
+| `gate_bench.py` | `python scripts/gate_bench.py`（`--json` 取数字） | 对 `examples/` 两个合格产物施加 17 种确定性变异（共 34 条：缺图/截断/空白/伪造 PNG、report 尺寸/字节/统计被改、NaN/inf、导出缺失、路径越界、重复记录等），逐条交给 `check_output`/`vision_metrics`/`vision_probe` 判定并统计抓取率；有逃逸 exit 1。本机实测 **34/34 拦截、0 逃逸、100%**（`baseline_ok=true`）。改过任一闸门后必跑：表格里 `escape` 行就是回归 |
+
+> 三者与「代理声称看过图」的区别：结论来自文件字节与像素统计，任何人都能在 CI 里复跑；`read_image` 仍是人类可读的最终仲裁，但不再是唯一证据。
+
 ## 10. 常见渲染问题对照表
 
 | 现象 | 最可能原因 | 动作 |

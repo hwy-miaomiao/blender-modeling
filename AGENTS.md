@@ -112,6 +112,8 @@ cd "F:\DeepSeek Harness\blender-modeling"
 python scripts/doctor.py
 # 首次在新机器/新会话上再跑一次端到端冒烟（64x64 CYCLES 渲染）
 python scripts/doctor.py --smoke
+# 视觉探针：零依赖解码 examples/*/renders，证明渲染图真的可读、尺寸对、非空白（不需要 Blender/Pillow）
+python scripts/doctor.py --vision
 ```
 
 **怎么读**：逐项 `[PASS]` / `[FAIL]` / `[WARN]`，再读汇总行如 `=== 结果: 6 PASS / 0 ERROR / 1 WARN ===`（汇总行之后还会打印一行「下一步」提示；有 ERROR 时末尾是逐条 `ERROR:` 明细）；存在 ERROR 时退出码 1。
@@ -119,6 +121,7 @@ python scripts/doctor.py --smoke
 **验收条件**
 
 - 汇总行 `0 ERROR`，退出码 0；`--smoke` 模式下包含 64×64 CYCLES 端到端渲染 PASS（kit/模板缺失会在这里暴露）。
+- 加 `--vision` 时，默认目标（`examples/*/renders`）与 `--vision-out`/`--vision-dir` 指定的目录全部 PASS——每张 PNG 可解码、像素尺寸与 `report.json` 声明一致、非空白（唯一色 ≥8 且亮度 std ≥2）。
 - WARN 可以带过，但必须在 brief.md 的"环境"小节记录一条。
 
 **失败处理**：Blender 找不到 → 设置 `$env:BLENDER_EXE`（或 `run_blender.py --blender <路径>`）；kit/模板缺失 → 检查 `<技能目录>\lib\blender_kit.py`、`templates\model_template.py` 是否存在；输出目录不可写 → 把 `<工作区>` 换到可写磁盘。doctor 的 ERROR 逐条修完后**重新跑**，不许带着 ERROR 开工。
@@ -396,6 +399,11 @@ python scripts/check_output.py --out "$OUT" --no-vision
 | `视觉闸门: 部分渲染图无法解码` | 只有部分 PNG 损坏/伪造（VISION009），视觉覆盖不全等同降低验收标准 | 重渲缺失视角；不要用占位/伪造图凑数 |
 | `report.vision 与实测不一致` | report 里的视觉指标与当前渲染图不匹配（逐字段比对：主体/背景/留白/底部/亮度） | 重跑 `vision_metrics.py --write`（或 `--stage full`）让 report 与图片同步 |
 | `report.renders 统计与渲染图不符` | Pillow 可用时从 PNG 重算 `mean/std/black_ratio`，与 `report.renders[]` 记录不一致（容差 mean/std 1.0、black_ratio 0.01） | report 陈旧或渲染图被替换：重跑 `--stage full` 重新生成 report，不要手改数字 |
+| `report.renders 记录的 width/height/bytes 与实际不符` | report 与真实 PNG/文件脱节（手改或换图） | 重跑 `--stage full`；不要手改 report |
+| `report.scene.dimensions 与 bbox_min/bbox_max 不一致` | 尺寸被改或 bbox 失真（容差 max(1e-3, 1%)） | 重跑 `--stage full`；dims 必须等于 bbox 跨度 |
+| `report 里出现非有限数字` | report.json 含 NaN/Infinity（Python json 能解析但无意义，旧闸门会静默放行） | 删掉手改内容，重跑 `--stage full` |
+| `渲染图 PNG 结构损坏（截断/伪造/CRC 失败）` | 只有合法文件头的假 PNG 也会被结构校验拦下（零依赖，不需要 Pillow） | 删除坏图重渲；`python scripts/vision_probe.py --dir "<输出目录>\renders"` 定位到具体文件 |
+| `report.renders 存在重复记录` / `渲染图数量与渲染记录不一致` | 同一文件被统计两次，或 `renders/` 实际 PNG 数与记录条数不符 | 重跑 `--stage render/full`；删掉多余/占位图 |
 | `迭代记录: report 含 vision，但…没有任何数据行` | 声明了新视觉指标却没有迭代记录（新产物至少 1 轮） | 按第 9 节补 1 行带图名与量化值的记录 |
 | 渲染图过小或 `std <= 4.0` / `black_ratio >= 0.98` | 空图/全黑/纯色图 | 检查灯光/相机/world，按第 14 节重渲 |
 | `report.renders 为空` | 脚本没保存渲染统计 | `full` 分支调用 `save_report(OUT_DIR)` |
@@ -500,12 +508,14 @@ WARN 可以带过，但要在交付说明里写明原因。视觉类 WARN（底�
 
 | 闸门 | 命令（cwd=`<技能目录>`） | 通过条件 | 失败处理 |
 | --- | --- | --- | --- |
-| 环境闸门 | `python scripts/doctor.py`（首次加 `--smoke`） | 汇总行 0 ERROR、退出码 0；WARN 记录在案 | 按 FAIL 提示修 Blender/kit/模板/权限，重跑 |
+| 环境闸门 | `python scripts/doctor.py`（首次加 `--smoke`；查图加 `--vision`） | 汇总行 0 ERROR、退出码 0；WARN 记录在案；`--vision` 时视觉探针全部 PASS | 按 FAIL 提示修 Blender/kit/模板/权限，重跑 |
 | build 闸门 | `python scripts/run_blender.py --script "<输出目录>\model.py" --out "<输出目录>" --stage build --label build` | 退出码 0；`BM_RESULT.ok=true` 且 `errors=[]` | 读 `log` 修脚本；连续 2 次同类错误走 15.2 |
 | 预览闸门 | 同上 `--stage render --label preview` | `ok=true`；`renders` ≥3；三张图均 `read_image` 真看且清单全 PASS | 修模型/灯光/相机，进迭代（≤4 轮） |
 | 终渲闸门 | 同上 `--stage full --label final --timeout 900` | `ok=true`；`exports` 含 blend+glb；`report.json` 合法；final 图看好 | 检查导出分支/日志 |
-| 交付闸门 | `python scripts/check_output.py --out "<输出目录>"` | 退出码 0；0 ERROR（WARN 要解释） | 按 ERROR 关键字表（第 11 节）逐条修 |
+| 交付闸门 | `python scripts/check_output.py --out "<输出目录>"` | 退出码 0；0 ERROR（WARN 要解释）；含 PNG 结构、report 尺寸/字节一致性、非有限数字、路径越界检查 | 按 ERROR 关键字表（第 11 节）逐条修 |
 | 视觉闸门（check_output 内置） | `python scripts/vision_metrics.py --out "<输出目录>"`（或随交付闸门自动执行） | 0 ERROR：主体占比 3%-90%、四边留白 ≥1%、底部留白 ≤55%；全部声明的渲染图均可解码（任一张无法解码 → VISION008/009 ERROR）；`report.vision` 与实测逐字段一致；Pillow 可用时 `report.renders` 的 `mean/std/black_ratio` 从 PNG 重算一致（不一致 ERROR）；WARN 需解释 | 按 VISION001-007 调相机/构图/灯光；VISION008（全部无法解码）与 VISION009（部分无法解码）都必须重渲；未装 Pillow 时 SKIP，但 CI 要求 SKIP=0 |
+| 视觉探针闸门（零依赖，可进 CI） | `python scripts/doctor.py --vision`（或 `python scripts/vision_probe.py --out "<输出目录>"` / `--dir "<输出目录>\renders"`） | 0 FAIL：每张 PNG 可解码（结构/CRC/IDAT/IEND 合法）、像素尺寸与 `report.renders` 声明一致、非空白（唯一色 ≥8 且亮度 std ≥2）；联系表存在时版式/格数/尺寸正确 | 按 `reasons` 重渲对应图；`--json` 给机器判决 `{ok,files,reasons}` |
+| 变异闸门基准（改闸门代码后必跑） | `python scripts/gate_bench.py`（`--json` 给数字；`--selftest` 无需示例） | 退出码 0；34/34 变异被拦（本机实测抓取率 100%，`baseline_ok=true`；CI 同口径） | 表格里 `escape` 行即闸门回归：修对应检查逻辑，禁止改基准期望值来「变绿」 |
 | SAFE_MODE 闸门 | `python scripts/safe_check.py "<输出目录>\model.py" templates\model_template.py templates\edit_model_template.py` | 0 ERROR（无 subprocess/eval/exec/网络/`__import__`/`shutil` 拷贝；无绝对路径、盘符相对、`..`、变量路径写文件，含 `Path.open`/`write_text`） | 删危险调用，改用 kit API 与白名单目录；`--selftest` 可先验证检查器本身 |
 | 快照闸门（可选，多轮迭代） | `python scripts/snapshot.py --out "<输出目录>" --list` | `best.json` 的 schema/目录一致、best 版本结构合法（`validate_best` 无 WARN） | `--rollback` 回退最佳版本（只还原 model.py/renders/report.json，不还原 exports/），之后重跑 `--stage full` 重新导出 |
 | 看图闸门 | `read_image` 打开 `renders/view-*.png`、`final-*.png` | 第 14 节 12 项全部"通过" | 回到阶段 6（或达 4 轮上限交付最佳） |
